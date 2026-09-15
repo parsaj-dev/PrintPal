@@ -115,7 +115,6 @@ def _run(log) -> None:
     if path is None:
         log.info("No input file found on clipboard or command line.")
         from printpal.ui import show_info
-        # show the log path so the user can check what happened
         from printpal.config import _CONFIG_DIR
         log_path = _CONFIG_DIR / "logs" / "printpal.log"
         show_info(
@@ -138,31 +137,53 @@ def _run(log) -> None:
         show_error("PrintPal", err)
         return
 
-    # two-pass: detect at low DPI (fast), then crop at high DPI (quality)
-    from printpal.rasterize import load_image
-    from printpal.detect import find_label, crop_at_dpi
+    from printpal.ui import ProgressWindow
+    progress = ProgressWindow()
+
+    try:
+        _process_and_print(log, config, path, progress)
+    finally:
+        progress.close()
+
+
+def _process_and_print(log, config, path: str, progress) -> None:
+    from printpal.rasterize import load_image, rasterize_pdf_region
+    from printpal.detect import find_label, _rotate_upright
 
     DETECT_DPI = 200
-    PRINT_DPI = 600
+    PRINT_DPI = 300
 
+    progress.update("Reading PDF...")
     log.info("Rasterizing at %d DPI for detection...", DETECT_DPI)
     img = load_image(path, dpi=DETECT_DPI)
     log.info("Page size: %dx%d px", img.width, img.height)
 
+    progress.update("Detecting label...")
     result = find_label(img, dpi=DETECT_DPI)
     log.info("Detection: method=%s, confidence=%.2f, barcodes_in=%d, barcodes_out=%d, box=%s",
              result.method, result.confidence, result.barcodes_in, result.barcodes_out, result.box)
     for w in result.warnings:
         log.warning("Detection warning: %s", w)
 
-    # re-rasterize at print DPI and crop for full quality output
-    print_image = result.image  # fallback to detection-quality if not PDF
-    if path.lower().endswith(".pdf") and result.confidence > 0:
-        log.info("Re-rasterizing at %d DPI for print quality...", PRINT_DPI)
-        img_hq = load_image(path, dpi=PRINT_DPI)
-        log.info("High-quality page: %dx%d px", img_hq.width, img_hq.height)
-        print_image = crop_at_dpi(img_hq, result, PRINT_DPI)
-        log.info("Print-quality crop: %dx%d px", print_image.width, print_image.height)
+    print_image = result.image
+    is_pdf = path.lower().endswith(".pdf")
+    if is_pdf and result.confidence > 0:
+        x0, y0, x1, y1 = result.box
+        crop_area = (x1 - x0) * (y1 - y0)
+        page_area = img.width * img.height
+        is_full_page = crop_area >= page_area * 0.85
+
+        if is_full_page:
+            progress.update("Rendering label...")
+            log.info("Full-page label, rendering at %d DPI...", PRINT_DPI)
+            print_image = load_image(path, dpi=PRINT_DPI)
+        else:
+            progress.update("Rendering label at print quality...")
+            log.info("Rendering crop region at %d DPI...", PRINT_DPI)
+            print_image = rasterize_pdf_region(path, result.box, DETECT_DPI, PRINT_DPI)
+            print_image = _rotate_upright(print_image, result.orientation)
+
+        log.info("Print image: %dx%d px", print_image.width, print_image.height)
 
     def do_print():
         log.info("Sending to printer: %s", config.printer)
@@ -179,15 +200,13 @@ def _run(log) -> None:
         log.info("User cancelled.")
 
     if result.confidence >= 0.7:
-        # high confidence: auto-print, show a brief notification
         log.info("High confidence (%.2f), auto-printing.", result.confidence)
+        progress.update("Sending to printer...")
         do_print()
-        # quick notification instead of a blocking window
-        from printpal.ui import show_info
-        show_info("PrintPal", f"Label sent to {config.printer}.")
+        progress.update("Done!")
     else:
-        # low confidence: show preview
         log.info("Low confidence (%.2f), showing preview.", result.confidence)
+        progress.close()
         from printpal.ui import PreviewWindow
         preview = PreviewWindow(result, config, on_print=do_print, on_cancel=do_cancel)
         preview.run()

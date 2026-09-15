@@ -272,3 +272,44 @@ def show_info(title: str, message: str) -> None:
     root.withdraw()
     messagebox.showinfo(title, message)
     root.destroy()
+
+
+class ProgressWindow:
+    """Small always-on-top window showing processing status."""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("PrintPal")
+        self.root.resizable(False, False)
+        self.root.attributes("-topmost", True)
+        self.root.overrideredirect(True)
+
+        frame = ttk.Frame(self.root, padding=20)
+        frame.pack()
+
+        self._title = ttk.Label(frame, text="PrintPal", font=("Segoe UI", 11, "bold"))
+        self._title.pack(pady=(0, 8))
+
+        self._label = ttk.Label(frame, text="Starting...", font=("Segoe UI", 10),
+                                width=30, anchor="center")
+        self._label.pack()
+
+        self._bar = ttk.Progressbar(frame, mode="indeterminate", length=220)
+        self._bar.pack(pady=(8, 0))
+        self._bar.start(15)
+
+        self.root.update_idletasks()
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    def update(self, text: str):
+        self._label.configure(text=text)
+        self.root.update()
+
+    def close(self):
+        try:
+            self._bar.stop()
+            self.root.destroy()
+        except tk.TclError:
+            pass
