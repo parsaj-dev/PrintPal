@@ -141,17 +141,37 @@ def _rotate_upright(img: Image.Image, orientation: str) -> Image.Image:
     return table.get(orientation, img)
 
 
-def _fallback_largest_blob(ink: np.ndarray, dpi: int) -> tuple[int, int, int, int] | None:
-    """Find the largest connected content region as a last resort."""
-    close_px = max(8, int(dpi * 0.13))
+def _find_blobs(ink: np.ndarray, dpi: int) -> list[tuple[int, int, int, int, int]]:
+    """Find connected content regions via morphological closing.
+    Returns list of (x0, y0, x1, y1, area) sorted by area descending."""
+    close_px = max(8, int(dpi * 0.5))
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (close_px, close_px))
     closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k)
     n, _labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
-    if n <= 1:
+    blobs = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        blobs.append((x, y, x + w, y + h, area))
+    blobs.sort(key=lambda b: b[4], reverse=True)
+    return blobs
+
+
+def _blob_containing_point(blobs: list[tuple[int, int, int, int, int]],
+                           cx: int, cy: int) -> tuple[int, int, int, int] | None:
+    """Return the largest blob whose bounding box contains (cx, cy)."""
+    for x0, y0, x1, y1, _ in blobs:
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return x0, y0, x1, y1
+    return None
+
+
+def _fallback_largest_blob(ink: np.ndarray, dpi: int) -> tuple[int, int, int, int] | None:
+    """Find the largest connected content region as a last resort."""
+    blobs = _find_blobs(ink, dpi)
+    if not blobs:
         return None
-    cid = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    x, y, w, h = stats[cid, :4]
-    return x, y, x + w, y + h
+    x0, y0, x1, y1, _ = blobs[0]
+    return x0, y0, x1, y1
 
 
 # -- public API ----------------------------------------------------------------
@@ -177,6 +197,29 @@ def find_label(img: Image.Image, dpi: int = 200) -> LabelResult:
         seed = (min(xs0), min(ys0), max(xs1), max(ys1))
         box = _grow_to_block(ink, seed, dpi)
         orientation = _dominant_orientation(barcodes)
+
+        # the gap merge can be too conservative for labels with large internal
+        # whitespace (address blocks separated from barcodes by big gaps).
+        # Find the morphological blob that contains the barcode center and
+        # use it if it's bigger than the gap-merge result.
+        bc_cx = (seed[0] + seed[2]) // 2
+        bc_cy = (seed[1] + seed[3]) // 2
+        blobs = _find_blobs(ink, dpi)
+        blob = _blob_containing_point(blobs, bc_cx, bc_cy)
+        if blob is not None:
+            bx0, by0, bx1, by1 = blob
+            gx0, gy0, gx1, gy1 = box
+            blob_area = (bx1 - bx0) * (by1 - by0)
+            gap_area = (gx1 - gx0) * (gy1 - gy0)
+            # use the blob if it's substantially larger but not the whole page
+            # (if it's >90% of the page, the blob probably merged label + instructions)
+            page_area = img.width * img.height
+            if blob_area > gap_area * 1.3 and blob_area < page_area * 0.9:
+                box = blob
+            elif blob_area >= page_area * 0.9:
+                # whole page is one blob -- the page IS the label
+                box = blob
+
         confidence = 0.9
         method = "barcode-anchored"
     else:
