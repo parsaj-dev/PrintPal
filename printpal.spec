@@ -1,10 +1,7 @@
 # PyInstaller spec for PrintPal
 #
 # Build with: pyinstaller printpal.spec
-# Output: dist/PrintPal.exe
-#
-# This bundles the zbar DLL that pyzbar needs on Windows. If the build
-# fails to find it, make sure zbar is installed or the DLL is in PATH.
+# Output: dist/PrintPal/ (one-folder mode for fast startup)
 
 import os
 import sys
@@ -19,7 +16,6 @@ try:
     pyzbar_dir = Path(pyzbar.__file__).parent
     for dll in pyzbar_dir.glob("*.dll"):
         zbar_dll.append((str(dll), "."))
-    # also check for libiconv and libzbar in common locations
     for name in ("libzbar-0.dll", "libiconv-2.dll"):
         candidate = pyzbar_dir / name
         if candidate.exists():
@@ -48,10 +44,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="PrintPal",
     debug=False,
     bootloader_ignore_signals=False,
@@ -59,11 +53,22 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # no console window
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/icon.ico",
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="PrintPal",
 )

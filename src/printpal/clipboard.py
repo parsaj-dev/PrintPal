@@ -2,7 +2,7 @@
 
 Tries, in order:
 1. CF_HDROP (files copied in Explorer)
-2. CF_UNICODETEXT / CF_TEXT containing a valid file path
+2. CF_UNICODETEXT / CF_TEXT containing a valid file path or file:/// URL
 
 On non-Windows (for testing), falls back to a stub that always returns None.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from urllib.parse import unquote, urlparse
 
 
 def _strip_quotes(s: str) -> str:
@@ -20,9 +21,26 @@ def _strip_quotes(s: str) -> str:
     return s
 
 
+def _file_url_to_path(url: str) -> str | None:
+    """Convert a file:/// URL to a local path, or return None if not a file URL."""
+    url = url.strip()
+    if not url.lower().startswith("file:"):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "file":
+        return None
+    path = unquote(parsed.path)
+    # on Windows, file:///C:/foo comes through as /C:/foo -- strip the leading slash
+    if len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path
+
+
+_SUPPORTED_EXT = (".pdf", ".png", ".jpg", ".jpeg")
+
+
 def _is_supported_file(path: str) -> bool:
-    lower = path.lower()
-    return os.path.isfile(path) and (lower.endswith(".pdf") or lower.endswith(".png") or lower.endswith(".jpg") or lower.endswith(".jpeg"))
+    return os.path.isfile(path) and path.lower().endswith(_SUPPORTED_EXT)
 
 
 if sys.platform == "win32":
@@ -81,12 +99,19 @@ if sys.platform == "win32":
             if _is_supported_file(p):
                 return p
 
-        # try text
+        # try text (file:/// URL, quoted path, or plain path)
         text = _get_text()
         if text:
-            path = _strip_quotes(text.strip().splitlines()[0])
-            if _is_supported_file(path):
-                return path
+            line = _strip_quotes(text.strip().splitlines()[0])
+
+            # file:/// URL from a browser address bar
+            converted = _file_url_to_path(line)
+            if converted and _is_supported_file(converted):
+                return converted
+
+            # plain path
+            if _is_supported_file(line):
+                return line
 
         return None
 

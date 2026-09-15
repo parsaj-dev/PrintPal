@@ -40,7 +40,12 @@ Designed for thermal label printers like the DYMO LabelWriter 450 and similar. W
 
 ## Download
 
-Grab the latest `PrintPal.exe` from the [Releases page](https://github.com/parsaj-dev/PrintPal/releases/latest). No installation needed, just run it. Pin it to your taskbar for one-click access.
+Go to the [Releases page](https://github.com/parsaj-dev/PrintPal/releases/latest) and grab:
+
+- **`PrintPal-Setup.exe`** -- installer with Start Menu shortcut, desktop shortcut, and Add/Remove Programs entry. Recommended.
+- **`PrintPal-Portable.zip`** -- extract anywhere and run. No install needed.
+
+No Python or other dependencies required. Everything is bundled.
 
 ## How the detection works
 
