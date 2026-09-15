@@ -91,6 +91,26 @@ def _run(log) -> None:
     config = Config.load()
     log.info("Config loaded: printer=%s, dpi=%d", config.printer, config.dpi)
 
+    # verify the configured printer exists, offer a picker if not
+    from printpal.printing import printer_exists, list_printers
+    if not printer_exists(config.printer):
+        available = list_printers()
+        log.warning("Printer %r not found. Available: %s", config.printer, available)
+        from printpal.ui import PrinterPicker
+        picker = PrinterPicker(
+            available, config.printer,
+            f'Printer "{config.printer}" was not found.\n\n'
+            f"Pick one of the {len(available)} printers installed on this machine. "
+            f"This will be saved as your default."
+        )
+        chosen = picker.run()
+        if chosen is None:
+            log.info("User cancelled printer selection.")
+            return
+        config.printer = chosen
+        config.save()
+        log.info("Printer set to: %s", config.printer)
+
     path = _resolve_input(sys.argv)
     if path is None:
         log.info("No input file found on clipboard or command line.")

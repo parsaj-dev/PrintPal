@@ -198,6 +198,66 @@ class SettingsDialog:
         self.dialog.destroy()
 
 
+class PrinterPicker:
+    """Modal dialog that shows all installed printers and lets the user pick one.
+    Shown when the configured printer is not found."""
+
+    def __init__(self, printers: list[str], current: str, message: str):
+        self.result: str | None = None
+
+        self.root = tk.Tk()
+        self.root.title("PrintPal - Choose Printer")
+        self.root.resizable(False, False)
+        self.root.attributes("-topmost", True)
+
+        main = ttk.Frame(self.root, padding=16)
+        main.pack(fill="both", expand=True)
+
+        ttk.Label(main, text=message, wraplength=400, justify="left",
+                  font=("Segoe UI", 10)).pack(pady=(0, 12))
+
+        ttk.Label(main, text="Select a printer:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+        self.printer_var = tk.StringVar(value=printers[0] if printers else "")
+        self.listbox = tk.Listbox(main, height=min(10, max(3, len(printers))),
+                                   font=("Segoe UI", 10), selectmode="browse")
+        for p in printers:
+            self.listbox.insert("end", p)
+        if printers:
+            self.listbox.selection_set(0)
+        self.listbox.pack(fill="x", pady=(4, 12))
+
+        btn_frame = ttk.Frame(main)
+        btn_frame.pack(fill="x")
+
+        ttk.Button(btn_frame, text="Use this printer", command=self._select).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_frame, text="Cancel", command=self._cancel).pack(side="right")
+
+        self.listbox.bind("<Double-1>", lambda e: self._select())
+        self.root.bind("<Return>", lambda e: self._select())
+        self.root.bind("<Escape>", lambda e: self._cancel())
+        self.root.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self.root.update_idletasks()
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    def _select(self):
+        sel = self.listbox.curselection()
+        if sel:
+            self.result = self.listbox.get(sel[0])
+        self.root.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.root.destroy()
+
+    def run(self) -> str | None:
+        self.root.mainloop()
+        return self.result
+
+
 def show_error(title: str, message: str) -> None:
     """Show a simple error dialog and return."""
     root = tk.Tk()
