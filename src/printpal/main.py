@@ -93,9 +93,20 @@ def _run(log) -> None:
 
     path = _resolve_input(sys.argv)
     if path is None:
-        log.info("No input file found.")
+        log.info("No input file found on clipboard or command line.")
         from printpal.ui import show_info
-        show_info("PrintPal", "Copy a label PDF first, then click the app.")
+        # show the log path so the user can check what happened
+        from printpal.config import _CONFIG_DIR
+        log_path = _CONFIG_DIR / "logs" / "printpal.log"
+        show_info(
+            "PrintPal",
+            "Copy a label PDF first, then click the app.\n\n"
+            "Accepted inputs:\n"
+            "- Copy a PDF file in Explorer (right-click > Copy)\n"
+            "- Copy a file path (Ctrl+Shift+C in Explorer)\n"
+            "- Copy a file:/// URL from Chrome's address bar\n\n"
+            f"If this keeps happening, check the log:\n{log_path}"
+        )
         return
 
     log.info("Input file: %s (%d bytes)", path, os.path.getsize(path))
