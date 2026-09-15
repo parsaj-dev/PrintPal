@@ -1,0 +1,25 @@
+[project]
+name = "printpal"
+version = "0.1.0"
+description = "One-click shipping label cropper and printer for Windows"
+requires-python = ">=3.10"
+dependencies = [
+    "PyMuPDF==1.25.4",
+    "pyzbar==0.1.9",
+    "Pillow==11.2.1",
+    "numpy==2.2.6",
+    "opencv-python-headless==4.11.0.86",
+    "pywin32==310; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pyinstaller==6.13.0",
+]
+
+[project.scripts]
+printpal = "printpal.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
