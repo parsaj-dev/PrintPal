@@ -23,6 +23,8 @@ class LabelResult:
     barcodes_in: int            # count in the source
     barcodes_out: int           # count in the cropped output (recheck)
     box: tuple[int, int, int, int]  # (x0, y0, x1, y1) in source px, pre-rotation
+    orientation: str = "UP"     # barcode orientation used for rotation
+    detect_dpi: int = 200       # DPI the detection was run at
     warnings: list[str] = field(default_factory=list)
 
 
@@ -221,5 +223,25 @@ def find_label(img: Image.Image, dpi: int = 200) -> LabelResult:
         barcodes_in=len(barcodes),
         barcodes_out=barcodes_out,
         box=(x0, y0, x1, y1),
+        orientation=orientation,
+        detect_dpi=dpi,
         warnings=warnings,
     )
+
+
+def crop_at_dpi(img_hq: Image.Image, result: LabelResult, output_dpi: int) -> Image.Image:
+    """Re-crop a higher-DPI render using the box found at detection DPI.
+
+    Scales the detection box coordinates from detect_dpi to output_dpi,
+    crops, and rotates. Use this to get print-quality output from a
+    fast low-DPI detection pass.
+    """
+    scale = output_dpi / result.detect_dpi
+    x0, y0, x1, y1 = result.box
+    hx0 = max(0, int(x0 * scale))
+    hy0 = max(0, int(y0 * scale))
+    hx1 = min(img_hq.width, int(x1 * scale))
+    hy1 = min(img_hq.height, int(y1 * scale))
+
+    crop = img_hq.crop((hx0, hy0, hx1, hy1))
+    return _rotate_upright(crop, result.orientation)

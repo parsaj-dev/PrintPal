@@ -138,25 +138,37 @@ def _run(log) -> None:
         show_error("PrintPal", err)
         return
 
-    # rasterize and detect
+    # two-pass: detect at low DPI (fast), then crop at high DPI (quality)
     from printpal.rasterize import load_image
-    from printpal.detect import find_label
+    from printpal.detect import find_label, crop_at_dpi
 
-    log.info("Rasterizing at %d DPI...", config.dpi)
-    img = load_image(path, dpi=config.dpi)
+    DETECT_DPI = 200
+    PRINT_DPI = 600
+
+    log.info("Rasterizing at %d DPI for detection...", DETECT_DPI)
+    img = load_image(path, dpi=DETECT_DPI)
     log.info("Page size: %dx%d px", img.width, img.height)
 
-    result = find_label(img, dpi=config.dpi)
+    result = find_label(img, dpi=DETECT_DPI)
     log.info("Detection: method=%s, confidence=%.2f, barcodes_in=%d, barcodes_out=%d, box=%s",
              result.method, result.confidence, result.barcodes_in, result.barcodes_out, result.box)
     for w in result.warnings:
         log.warning("Detection warning: %s", w)
 
+    # re-rasterize at print DPI and crop for full quality output
+    print_image = result.image  # fallback to detection-quality if not PDF
+    if path.lower().endswith(".pdf") and result.confidence > 0:
+        log.info("Re-rasterizing at %d DPI for print quality...", PRINT_DPI)
+        img_hq = load_image(path, dpi=PRINT_DPI)
+        log.info("High-quality page: %dx%d px", img_hq.width, img_hq.height)
+        print_image = crop_at_dpi(img_hq, result, PRINT_DPI)
+        log.info("Print-quality crop: %dx%d px", print_image.width, print_image.height)
+
     def do_print():
         log.info("Sending to printer: %s", config.printer)
         try:
             from printpal.printing import print_label
-            print_label(result.image, config.printer)
+            print_label(print_image, config.printer)
             log.info("Print job submitted.")
         except Exception as e:
             log.error("Print failed: %s", e)
