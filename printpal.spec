@@ -27,7 +27,7 @@ a = Analysis(
     ["src/printpal/main.py"],
     pathex=["src"],
     binaries=zbar_dll,
-    datas=[],
+    datas=[("assets/icon.png", "assets")],
     hiddenimports=["printpal"],
     hookspath=[],
     hooksconfig={},

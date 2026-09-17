@@ -1,6 +1,6 @@
 [project]
 name = "printpal"
-version = "0.5.0"
+version = "0.6.0"
 description = "One-click shipping label cropper and printer for Windows"
 authors = [{name = "Parsa J."}]
 requires-python = ">=3.10"

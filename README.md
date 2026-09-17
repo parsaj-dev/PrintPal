@@ -30,13 +30,15 @@
 
 ## What it does
 
-1. Download a return label PDF and copy the file (or its path) to the clipboard.
-2. Click the PrintPal icon in the taskbar.
-3. It reads the file, finds the shipping label, crops out the legal text and instructions, rotates it upright, and sends it to your label printer.
+1. Copy a shipping-label PDF (or click **Open**, or press **Ctrl+V**).
+2. PrintPal reads the file, finds the label, crops off the legal text and instructions, straightens it, and shows it in a live preview.
+3. Check the crop, pick your printer, and hit **Print**.
 
-If the crop looks good (high confidence), it prints immediately with a quick notification. If it's not sure, it shows a preview window so you can check before printing.
+The window shows the detected label at print quality with a confidence read-out. Multi-page files (several labels, or a label plus a packing slip) get a thumbnail rail so you can page through and print any of them. You can rotate a label by hand, set the number of copies, or save the crop as a PNG.
 
-Designed for thermal label printers like the DYMO LabelWriter 450 and similar. Works with FedEx, UPS, Amazon, and any return label PDF that has barcodes.
+Prefer no clicks? Turn on **auto-print** in Settings and a single, high-confidence label prints the moment it loads.
+
+Designed for thermal label printers like the DYMO LabelWriter 450, Rollo, and Zebra. Works with FedEx, UPS, Purolator, Amazon, and any label PDF or image with barcodes -- whether it arrives as a bare 4x6 or buried on a Letter/A4 sheet.
 
 ## Download
 
@@ -51,37 +53,48 @@ No Python or other dependencies required. Everything is bundled.
 
 No cloud services, no AI, no network access. Everything runs locally.
 
-- Rasterizes the PDF page at 200 DPI.
-- Finds barcodes with [pyzbar](https://github.com/NaturalHistoryMuseum/pyzbar). Their position and orientation anchor the crop.
-- Grows from the barcode region to the full label using a two-pass gap merge (vertical, then horizontal). The gap thresholds adapt to the whitespace distribution on each page instead of using hardcoded values.
-- Adds a quiet-zone margin so barcodes are not clipped.
-- Rotates upright based on barcode orientation.
-- Rechecks that barcodes still scan in the cropped output. If they don't, confidence drops and it shows a preview instead of auto-printing.
+PrintPal reads the page's **physical size** first and picks one of two strategies:
 
-Falls back to the largest content block on the page if no barcodes are found, but flags this as low confidence and always shows the preview.
+- **Bare label media** (a page whose short side is roughly 6 inches or less -- a 4x6, 4x8, etc.): the page *is* the label. PrintPal trims the outer white margin so the label fills the media and prints it.
+- **Document media** (Letter, A4): the label is a block somewhere on the sheet. PrintPal closes the page's ink into solid regions and keeps the connected region that carries the barcodes, then unions in any barcode set apart by a divider. The closing bridges *intra-label* gaps (address line spacing, the gap between an address block and its barcode) without reaching across the wider whitespace that separates the label from instructions -- which is what keeps the whole address attached to the barcode instead of getting sliced off.
+
+Then, for both strategies:
+
+- Barcodes are found with [pyzbar](https://github.com/NaturalHistoryMuseum/pyzbar); their orientation is used to rotate the crop upright (a rotated FedEx or Amazon return label comes out straight).
+- A quiet-zone margin is added so barcodes are never clipped.
+- The crop is re-scanned to confirm the barcodes still decode. If they don't, the confidence drops so you know to check the preview.
+
+Detection runs on a low-DPI render for speed; the label you print is then re-rendered from the PDF at full print resolution -- only the label's region, so a big sheet never gets rasterized at high DPI just to keep a 4x6 corner.
+
+If no barcode is found, PrintPal keeps the whole page (or the largest content block) and flags it as low confidence rather than guessing at a tight crop.
 
 ## Input handling
 
-PrintPal looks for a label file in this order:
+PrintPal accepts a label from any of:
 
-1. **Command line argument** -- pass a file path directly (`PrintPal.exe "C:\Downloads\label.pdf"`).
-2. **Clipboard file** -- right-click a file in Explorer and Copy, then click PrintPal.
-3. **Clipboard text path** -- use Windows "Copy as path" (Ctrl+Shift+C), then click PrintPal.
+1. **Command line** -- `PrintPal.exe "C:\Downloads\label.pdf"`.
+2. **Clipboard file** -- right-click a file in Explorer and Copy, then press **Ctrl+V** (or launch PrintPal).
+3. **Clipboard path or URL** -- "Copy as path" (Ctrl+Shift+C) or a `file:///` URL from a browser.
+4. **Open button** -- pick a file from the window.
 
-Supports PDF, PNG, and JPEG. The source file is never modified, moved, or deleted.
+Supports PDF plus PNG, JPEG, TIFF, BMP, GIF and WebP images. The source file is never modified, moved, or deleted. A second launch while PrintPal is open hands its file to the existing window instead of opening a duplicate.
 
 ## Configuration
 
-Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on first run:
+Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on first run. Change them from the **Settings** button, or edit the file by hand:
 
 | Setting | Default | What it does |
 |---|---|---|
 | `printer` | `DYMO LabelWriter 450` | Name of the target printer |
 | `media_size` | `4x6` | Label media size |
-| `dpi` | `200` | Rasterization DPI (lower = faster on slow machines) |
-| `crop_margin_inches` | `0.06` | Extra margin around the detected label |
+| `detect_dpi` | `200` | Detection render DPI (lower = faster, but barcodes may not decode below ~180) |
+| `print_dpi` | `300` | Print render DPI |
+| `crop_margin_inches` | `0.08` | Quiet-zone margin around the detected label |
+| `copies` | `1` | Copies per print |
+| `auto_print` | `false` | Print a single high-confidence label automatically |
+| `auto_print_min_confidence` | `0.85` | Confidence needed for auto-print |
 
-You can also change settings from the Settings button in the preview window.
+Older config files that used `dpi` are still read (it maps to `detect_dpi`).
 
 ## Building from source
 
@@ -103,21 +116,26 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Unit tests (gap merging, adaptive thresholds, blank page handling) run without any fixtures. To run integration tests, drop a shipping label PDF at `tests/fixtures/sample_label.pdf` and they'll verify the full detection pipeline.
+Unit tests run without any fixtures -- the barcode-dependent ones inject fake barcodes, so the geometry, orientation, printing and config logic are all covered headless (no Windows, no display). To also run the end-to-end integration tests, drop a real shipping label PDF at `tests/fixtures/sample_label.pdf`.
 
 ## Project structure
 
 ```
 src/printpal/
-    main.py          entry point, input resolution, single-instance guard
-    detect.py        barcode detection, gap-merge cropping, rotation, recheck
-    rasterize.py     PDF/image to PIL Image via PyMuPDF
-    clipboard.py     Windows clipboard (CF_HDROP and text path)
-    printing.py      Windows GDI print spooler
-    config.py        TOML config in AppData
+    main.py          entry point, input resolution, single-instance handoff, auto-print
+    detect.py        physical-size-aware label detection, cropping, rotation, recheck
+    pipeline.py      turns a file into ready-to-print labels (multi-page, lazy hi-res render)
+    rasterize.py     PDF/image to PIL Image via PyMuPDF (page + region rendering)
+    clipboard.py     Windows clipboard (CF_HDROP, text path, file:/// URL)
+    printing.py      Windows GDI print spooler, Lanczos-to-device scaling
+    config.py        tolerant TOML config in AppData
     log.py           rotating file logger
-    ui.py            tkinter preview window and settings dialog
+    theme.py         ttk design system (palette, fonts, styles)
+    ui.py            main window, preview, thumbnail rail, settings
 tests/
-    test_detect.py   detection unit and integration tests
-    test_config.py   config round-trip tests
+    test_detect.py     detection unit + integration tests
+    test_pipeline.py   orchestration, manual rotation, print render
+    test_printing.py   image prep + DIB packing
+    test_config.py     config round-trip + tolerance
+    test_rasterize.py  loader helpers
 ```

@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 log = logging.getLogger("printpal")
 
-_SUPPORTED_EXT = (".pdf", ".png", ".jpg", ".jpeg")
+_SUPPORTED_EXT = (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp")
 
 
 def _strip_quotes(s: str) -> str:

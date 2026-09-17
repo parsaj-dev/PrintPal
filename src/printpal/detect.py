@@ -1,290 +1,303 @@
-"""Barcode-anchored shipping label detection and cropping.
+"""Shipping-label detection and cropping.
 
-Finds barcodes on a rasterized page, grows from them to the full label using
-axis-wise gap merging, rotates to upright, and verifies the output barcodes
-still scan. No network, no LLM, pure local CV.
+The job: take a rasterized page (which may be a bare 4x6 label, or a Letter/A4
+sheet that carries a label plus instructions, a packing slip, or legal text)
+and return the smallest upright crop that contains the whole label -- every
+barcode *and* every scrap of address text -- and nothing else.
+
+Two regimes, chosen by the page's physical size:
+
+* **Label media** (short side <= ~6.5 in): the page *is* the label. Trim the
+  outer white margin and print it. Fast and near-foolproof.
+
+* **Document media** (Letter, A4, ...): the label is a dense block somewhere on
+  the sheet. We find it by closing the ink into solid regions and picking the
+  connected component that carries the barcodes, then union in any barcode that
+  landed just outside. Closing with a kernel sized to bridge *intra-label* gaps
+  (address line spacing, the gap between address block and barcode) but not the
+  larger whitespace that separates the label from instructions is what keeps the
+  address text attached to the barcodes -- the thing the old gap-merge missed.
+
+No network, no LLM, pure local OpenCV + zbar.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
 
 import cv2
 import numpy as np
 from PIL import Image
-from pyzbar.pyzbar import decode as zbar_decode, Decoded
+from pyzbar.pyzbar import decode as zbar_decode
+
+# Below this short-side length (inches) we treat the whole page as the label.
+# 4x6, 4x8, 6x4 labels have a short side <= 6"; Letter/A4 short side is >= 8.2".
+LABEL_MEDIA_MAX_SHORT_IN = 6.5
+
+# Ink threshold: pixels darker than this (0-255 grey) count as content.
+_INK_THRESHOLD = 200
+
+# Map a barcode's reported reading orientation to the PIL transpose that brings
+# the crop upright. Verified empirically against real rotated FedEx/UPS labels:
+# a "RIGHT" barcode becomes upright under a 90-degree counter-clockwise turn.
+_ROTATION_FOR = {
+    "UP": None,
+    "DOWN": Image.ROTATE_180,
+    "LEFT": Image.ROTATE_270,
+    "RIGHT": Image.ROTATE_90,
+}
 
 
 @dataclass
 class LabelResult:
-    image: Image.Image
-    confidence: float           # 0.0 to 1.0
-    method: str
-    barcodes_in: int            # count in the source
-    barcodes_out: int           # count in the cropped output (recheck)
-    box: tuple[int, int, int, int]  # (x0, y0, x1, y1) in source px, pre-rotation
-    orientation: str = "UP"     # barcode orientation used for rotation
-    detect_dpi: int = 200       # DPI the detection was run at
+    image: Image.Image                 # cropped, upright label at detect DPI (preview)
+    confidence: float                  # 0.0 to 1.0
+    method: str                        # how the box was found
+    barcodes_in: int                   # barcodes decoded on the source page
+    barcodes_out: int                  # barcodes still decodable after cropping
+    box: tuple[int, int, int, int]     # (x0, y0, x1, y1) in source px, pre-rotation
+    orientation: str = "UP"            # barcode orientation used for rotation
+    detect_dpi: int = 200              # DPI the page was rasterized at
+    is_full_page: bool = False         # True when the whole media is the label
     warnings: list[str] = field(default_factory=list)
 
 
-# -- internals ----------------------------------------------------------------
+# -- low level helpers --------------------------------------------------------
 
-def _content_runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Find contiguous True runs in a 1D boolean array. Returns (start, end) pairs."""
-    runs: list[tuple[int, int]] = []
-    start = None
-    for i, val in enumerate(mask):
-        if val and start is None:
-            start = i
-        elif not val and start is not None:
-            runs.append((start, i))
-            start = None
-    if start is not None:
-        runs.append((start, len(mask)))
-    return runs
+def _ink_mask(gray: np.ndarray) -> np.ndarray:
+    return (gray < _INK_THRESHOLD).astype(np.uint8)
 
 
-def _merge_runs_around(runs: list[tuple[int, int]], gap_px: int, lo: int, hi: int) -> tuple[int, int]:
-    """Merge adjacent runs separated by gaps smaller than gap_px, then return
-    the merged span that overlaps the anchor interval [lo, hi]."""
-    if not runs:
-        return lo, hi
-    merged: list[list[int]] = [list(runs[0])]
-    for a, b in runs[1:]:
-        if a - merged[-1][1] < gap_px:
-            merged[-1][1] = b
-        else:
-            merged.append([a, b])
-    for a, b in merged:
-        if b > lo and a < hi:
-            return min(a, lo), max(b, hi)
-    return lo, hi
+def _content_bbox(ink: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Tight bounding box of all ink, or None if the page is blank."""
+    rows = np.where(ink.any(axis=1))[0]
+    cols = np.where(ink.any(axis=0))[0]
+    if rows.size == 0 or cols.size == 0:
+        return None
+    return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
 
 
-def _measure_gaps(runs: list[tuple[int, int]]) -> list[int]:
-    """Return the list of gap sizes between consecutive runs."""
-    gaps = []
-    for i in range(1, len(runs)):
-        gaps.append(runs[i][0] - runs[i - 1][1])
-    return gaps
+def _rect_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    x0 = max(a[0], b[0]); y0 = max(a[1], b[1])
+    x1 = min(a[2], b[2]); y1 = min(a[3], b[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0
+    return (x1 - x0) * (y1 - y0)
 
 
-def _adaptive_gap_threshold(gaps: list[int], fallback_px: int) -> int:
-    """Pick a gap merge threshold from the actual gap distribution on this page.
-
-    Strategy: find the largest jump between sorted gap sizes. Gaps below that
-    jump are intra-label spacing; gaps above are inter-section whitespace.
-    Falls back to the hardcoded value when there aren't enough gaps to decide.
-    """
-    if len(gaps) < 3:
-        return fallback_px
-    s = sorted(gaps)
-    best_jump = 0
-    best_idx = -1
-    for i in range(1, len(s)):
-        jump = s[i] - s[i - 1]
-        if jump > best_jump:
-            best_jump = jump
-            best_idx = i
-    if best_idx < 1 or best_jump < fallback_px * 0.3:
-        return fallback_px
-    # threshold sits just above the largest intra-label gap
-    return s[best_idx - 1] + max(1, best_jump // 4)
+def _union(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
-def _grow_to_block(ink: np.ndarray, seed: tuple[int, int, int, int], dpi: int) -> tuple[int, int, int, int]:
-    """Grow barcode bounding box to the full label via two-pass gap merge."""
-    H, W = ink.shape
-    sx0, sy0, sx1, sy1 = seed
-    ink_frac = 0.008
-
-    v_fallback = int(dpi * 0.45)
-    h_fallback = int(dpi * 0.30)
-
-    # vertical pass inside the barcode's x-column
-    strip = ink[:, sx0:sx1]
-    row_has = strip.sum(axis=1) > (sx1 - sx0) * ink_frac
-    v_runs = _content_runs(row_has)
-    v_gaps = _measure_gaps(v_runs)
-    v_gap = _adaptive_gap_threshold(v_gaps, v_fallback)
-    y0, y1 = _merge_runs_around(v_runs, v_gap, sy0, sy1)
-
-    # horizontal pass inside that vertical band
-    band = ink[y0:y1, :]
-    col_has = band.sum(axis=0) > (y1 - y0) * ink_frac
-    h_runs = _content_runs(col_has)
-    h_gaps = _measure_gaps(h_runs)
-    h_gap = _adaptive_gap_threshold(h_gaps, h_fallback)
-    x0, x1 = _merge_runs_around(h_runs, h_gap, sx0, sx1)
-
-    return x0, y0, x1, y1
+def _decode(img: Image.Image, gray: np.ndarray | None = None):
+    """Decode 1D + 2D barcodes. Feed zbar a greyscale image -- it is what zbar
+    works on internally, and it is measurably faster than handing it RGB."""
+    src = Image.fromarray(gray) if gray is not None else img
+    return zbar_decode(src)
 
 
-def _dominant_orientation(barcodes: Sequence[Decoded]) -> str:
+def _barcode_rects(barcodes) -> list[tuple[int, int, int, int]]:
+    rects = []
+    for b in barcodes:
+        r = b.rect
+        rects.append((r.left, r.top, r.left + r.width, r.top + r.height))
+    return rects
+
+
+def _dominant_orientation(barcodes) -> str:
+    """Most common barcode orientation, weighted by barcode area so a big
+    shipping barcode outvotes a tiny 2D symbol that zbar read sideways."""
     if not barcodes:
         return "UP"
-    counts: dict[str, int] = {}
+    weight: dict[str, float] = {}
     for b in barcodes:
-        o = str(b.orientation) if hasattr(b, "orientation") else "UP"
-        counts[o] = counts.get(o, 0) + 1
-    return max(counts, key=counts.get)
+        o = str(getattr(b, "orientation", "UP") or "UP")
+        area = max(1, b.rect.width * b.rect.height)
+        weight[o] = weight.get(o, 0.0) + area
+    return max(weight, key=weight.get)
 
 
 def _rotate_upright(img: Image.Image, orientation: str) -> Image.Image:
-    table = {
-        "UP": img,
-        "DOWN": img.rotate(180, expand=True),
-        "LEFT": img.rotate(270, expand=True),
-        "RIGHT": img.rotate(90, expand=True),
-    }
-    return table.get(orientation, img)
+    op = _ROTATION_FOR.get(orientation)
+    if op is None:
+        return img
+    return img.transpose(op)
 
 
-def _find_blobs(ink: np.ndarray, dpi: int) -> list[tuple[int, int, int, int, int]]:
-    """Find connected content regions via morphological closing.
-    Returns list of (x0, y0, x1, y1, area) sorted by area descending."""
-    close_px = max(8, int(dpi * 0.5))
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (close_px, close_px))
-    closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k)
-    n, _labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
-    blobs = []
-    for i in range(1, n):
-        x, y, w, h, area = stats[i]
-        blobs.append((x, y, x + w, y + h, area))
-    blobs.sort(key=lambda b: b[4], reverse=True)
-    return blobs
+def _components(ink: np.ndarray, dpi: int) -> list[tuple[int, int, int, int, int]]:
+    """Close the ink into solid regions and return their bounding boxes as
+    (x0, y0, x1, y1, area), largest area first.
 
-
-def _blob_containing_point(blobs: list[tuple[int, int, int, int, int]],
-                           cx: int, cy: int) -> tuple[int, int, int, int] | None:
-    """Return the largest blob whose bounding box contains (cx, cy)."""
-    for x0, y0, x1, y1, _ in blobs:
-        if x0 <= cx <= x1 and y0 <= cy <= y1:
-            return x0, y0, x1, y1
-    return None
-
-
-def _fallback_largest_blob(ink: np.ndarray, dpi: int) -> tuple[int, int, int, int] | None:
-    """Find the largest connected content region as a last resort."""
-    blobs = _find_blobs(ink, dpi)
-    if not blobs:
-        return None
-    x0, y0, x1, y1, _ = blobs[0]
-    return x0, y0, x1, y1
-
-
-# -- public API ----------------------------------------------------------------
-
-def find_label(img: Image.Image, dpi: int = 200) -> LabelResult:
-    """Detect and crop a shipping label from a page image.
-
-    Returns a LabelResult with the cropped, upright label and metadata about
-    how confident we are it worked.
+    The closing kernel (~0.35 in) is the crux: big enough to fuse an address
+    block, its logo and its barcodes into one region, small enough to leave the
+    label separate from instruction text set off by a wider margin or a cut line.
     """
-    rgb = np.array(img)
+    close = max(6, int(round(dpi * 0.35)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close, close))
+    closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, kernel)
+    count, _labels, stats, _cent = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    comps = []
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        comps.append((int(x), int(y), int(x + w), int(y + h), int(area)))
+    comps.sort(key=lambda c: c[4], reverse=True)
+    return comps
+
+
+def _label_block(ink: np.ndarray, barcode_rects, dpi: int
+                 ) -> tuple[tuple[int, int, int, int], str]:
+    """Find the label's bounding box on a document-sized page."""
+    comps = _components(ink, dpi)
+    if not comps:
+        H, W = ink.shape
+        return (0, 0, W, H), "whole-page"
+
+    if not barcode_rects:
+        # No barcode anchor: fall back to the largest content region.
+        x0, y0, x1, y1, _ = comps[0]
+        return (x0, y0, x1, y1), "largest-block"
+
+    # Pick the component that overlaps the barcodes the most.
+    def bc_overlap(c):
+        return sum(_rect_overlap(c[:4], r) for r in barcode_rects)
+
+    best = max(comps, key=bc_overlap)
+    box = best[:4]
+
+    # Any barcode that is mostly outside the chosen block belongs to the label
+    # too (e.g. a tracking barcode set apart by a divider). Union its component.
+    for r in barcode_rects:
+        r_area = (r[2] - r[0]) * (r[3] - r[1])
+        if _rect_overlap(box, r) < 0.5 * r_area:
+            for c in comps:
+                if _rect_overlap(c[:4], r) > 0:
+                    box = _union(box, c[:4])
+                    break
+            else:
+                box = _union(box, r)
+    return box, "barcode-block"
+
+
+# -- public API ---------------------------------------------------------------
+
+def find_label(img: Image.Image, dpi: int = 200,
+               margin_inches: float = 0.08) -> LabelResult:
+    """Detect and crop the shipping label on a rasterized page.
+
+    `img` is one page rendered at `dpi`. Returns a LabelResult whose `image` is
+    the upright, cropped label (at detect DPI, for preview) and whose `box`
+    /`orientation` can be replayed against a higher-DPI render for printing.
+    """
+    rgb = np.asarray(img.convert("RGB"))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    ink = (gray < 200).astype(np.uint8)
+    ink = _ink_mask(gray)
+    H, W = ink.shape
+    page_area = W * H
 
-    barcodes = zbar_decode(img)
+    short_in = min(W, H) / dpi
+    is_label_media = short_in <= LABEL_MEDIA_MAX_SHORT_IN
+
+    barcodes = _decode(img, gray)
+    if not barcodes and not is_label_media:
+        # Dense codes on a big sheet sometimes need more resolution. One retry at
+        # 1.5x by upscaling the grey plane is cheap next to re-rasterizing.
+        big = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+        retry = zbar_decode(Image.fromarray(big))
+        if retry:
+            class _Scaled:  # shim so downstream sees source-resolution rects
+                def __init__(s, d):
+                    s.rect = type("R", (), {
+                        "left": int(d.rect.left / 1.5), "top": int(d.rect.top / 1.5),
+                        "width": int(d.rect.width / 1.5), "height": int(d.rect.height / 1.5)})
+                    s.orientation = getattr(d, "orientation", "UP")
+                    s.type = d.type
+            barcodes = [_Scaled(d) for d in retry]
+
     warnings: list[str] = []
+    brects = _barcode_rects(barcodes)
 
-    if barcodes:
-        xs0 = [b.rect.left for b in barcodes]
-        ys0 = [b.rect.top for b in barcodes]
-        xs1 = [b.rect.left + b.rect.width for b in barcodes]
-        ys1 = [b.rect.top + b.rect.height for b in barcodes]
-        seed = (min(xs0), min(ys0), max(xs1), max(ys1))
-        box = _grow_to_block(ink, seed, dpi)
-        orientation = _dominant_orientation(barcodes)
+    if _content_bbox(ink) is None:
+        return LabelResult(
+            image=img, confidence=0.0, method="no-content",
+            barcodes_in=0, barcodes_out=0, box=(0, 0, W, H),
+            detect_dpi=dpi, warnings=["This page looks blank -- no content to print."],
+        )
 
-        # the gap merge can be too conservative for labels with large internal
-        # whitespace (address blocks separated from barcodes by big gaps).
-        # Find the morphological blob that contains the barcode center and
-        # use it if it's bigger than the gap-merge result.
-        bc_cx = (seed[0] + seed[2]) // 2
-        bc_cy = (seed[1] + seed[3]) // 2
-        blobs = _find_blobs(ink, dpi)
-        blob = _blob_containing_point(blobs, bc_cx, bc_cy)
-        if blob is not None:
-            bx0, by0, bx1, by1 = blob
-            gx0, gy0, gx1, gy1 = box
-            blob_area = (bx1 - bx0) * (by1 - by0)
-            gap_area = (gx1 - gx0) * (gy1 - gy0)
-            # use the blob if it's substantially larger but not the whole page
-            # (if it's >90% of the page, the blob probably merged label + instructions)
-            page_area = img.width * img.height
-            if blob_area > gap_area * 1.3 and blob_area < page_area * 0.9:
-                box = blob
-            elif blob_area >= page_area * 0.9:
-                # whole page is one blob -- the page IS the label
-                box = blob
-
-        confidence = 0.9
-        method = "barcode-anchored"
+    if is_label_media:
+        is_full_page = True
+        if barcodes:
+            # Trim the outer white margin so the printer fills the media, but keep
+            # the whole label -- content bbox already hugs every mark on the page.
+            box = _content_bbox(ink) or (0, 0, W, H)
+            method = "label-media"
+            confidence = 0.92
+        else:
+            # No barcode read: could be a packing slip, or a label whose code
+            # failed to scan. Don't gamble on a tight crop -- keep the whole page.
+            box = (0, 0, W, H)
+            method = "label-media-no-barcode"
+            confidence = 0.4
+            warnings.append("No barcode found on this label -- printing the whole page.")
     else:
-        blob = _fallback_largest_blob(ink, dpi)
-        if blob is None:
-            return LabelResult(
-                image=img, confidence=0.0, method="no-content",
-                barcodes_in=0, barcodes_out=0,
-                box=(0, 0, img.width, img.height),
-                warnings=["No content detected on this page."],
-            )
-        box = blob
-        orientation = "UP"
-        confidence = 0.3
-        method = "fallback-largest-blob"
-        warnings.append("No barcodes found. Using largest content block as fallback.")
+        is_full_page = False
+        box, method = _label_block(ink, brects, dpi)
+        if barcodes:
+            confidence = 0.9
+        else:
+            confidence = 0.3
+            warnings.append("No barcode found. Cropped to the largest block of content -- "
+                            "please check the preview.")
+        # If block detection basically returned the whole sheet, the crop isn't
+        # doing its job; flag it rather than silently printing instructions.
+        bx0, by0, bx1, by1 = box
+        if (bx1 - bx0) * (by1 - by0) >= page_area * 0.9 and barcodes:
+            confidence = min(confidence, 0.55)
+            warnings.append("The label fills most of the page -- the crop may include "
+                            "extra text. Check the preview.")
 
-    # add quiet-zone margin
-    margin = int(dpi * 0.06)
+    orientation = _dominant_orientation(barcodes)
+
+    # Quiet-zone margin so a barcode is never clipped flush to the edge.
+    margin = int(round(dpi * max(0.0, margin_inches)))
     x0, y0, x1, y1 = box
-    x0 = max(0, x0 - margin)
-    y0 = max(0, y0 - margin)
-    x1 = min(img.width, x1 + margin)
-    y1 = min(img.height, y1 + margin)
+    x0 = max(0, x0 - margin); y0 = max(0, y0 - margin)
+    x1 = min(W, x1 + margin); y1 = min(H, y1 + margin)
+    box = (x0, y0, x1, y1)
 
-    crop = img.crop((x0, y0, x1, y1))
+    crop = img.crop(box)
     upright = _rotate_upright(crop, orientation)
 
-    # recheck: do the barcodes still scan after cropping?
-    recheck = zbar_decode(upright)
+    # Quality gate: do the barcodes still decode after cropping + rotating?
+    recheck = _decode(upright)
     barcodes_out = len(recheck)
-
-    if barcodes and barcodes_out == 0:
-        confidence = max(confidence - 0.5, 0.1)
-        warnings.append("Barcodes did not scan in the cropped output.")
-    elif barcodes and barcodes_out < len(barcodes):
-        confidence = max(confidence - 0.2, 0.3)
-        warnings.append(f"Only {barcodes_out} of {len(barcodes)} barcodes survived cropping.")
+    if barcodes:
+        if barcodes_out == 0:
+            confidence = max(0.1, confidence - 0.45)
+            warnings.append("Barcodes did not re-scan in the crop -- verify before printing.")
+        elif barcodes_out < len(barcodes):
+            confidence = max(0.35, confidence - 0.15)
 
     return LabelResult(
         image=upright,
-        confidence=confidence,
+        confidence=round(confidence, 2),
         method=method,
         barcodes_in=len(barcodes),
         barcodes_out=barcodes_out,
-        box=(x0, y0, x1, y1),
+        box=box,
         orientation=orientation,
         detect_dpi=dpi,
+        is_full_page=is_full_page,
         warnings=warnings,
     )
 
 
-def crop_at_dpi(img_hq: Image.Image, result: LabelResult, output_dpi: int) -> Image.Image:
-    """Re-crop a higher-DPI render using the box found at detection DPI.
-
-    Scales the detection box coordinates from detect_dpi to output_dpi,
-    crops, and rotates. Use this to get print-quality output from a
-    fast low-DPI detection pass.
-    """
-    scale = output_dpi / result.detect_dpi
-    x0, y0, x1, y1 = result.box
-    hx0 = max(0, int(x0 * scale))
-    hy0 = max(0, int(y0 * scale))
-    hx1 = min(img_hq.width, int(x1 * scale))
-    hy1 = min(img_hq.height, int(y1 * scale))
-
-    crop = img_hq.crop((hx0, hy0, hx1, hy1))
-    return _rotate_upright(crop, result.orientation)
+def scale_box(box: tuple[int, int, int, int], from_dpi: int, to_dpi: int,
+              clip_w: int | None = None, clip_h: int | None = None) -> tuple[int, int, int, int]:
+    """Scale a detection-DPI box to another DPI, optionally clamped to bounds."""
+    s = to_dpi / from_dpi
+    x0, y0, x1, y1 = (int(round(v * s)) for v in box)
+    x0 = max(0, x0); y0 = max(0, y0)
+    if clip_w is not None:
+        x1 = min(clip_w, x1)
+    if clip_h is not None:
+        y1 = min(clip_h, y1)
+    return x0, y0, x1, y1
