@@ -12,9 +12,43 @@ import pymupdf
 
 _SUPPORTED_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp")
 
+# When an image file carries no usable resolution metadata we can't know its true
+# physical size. We assume it was produced at a thermal label printer's native
+# resolution (203 dpi is typical for Zebra/Rollo/DYMO), which keeps a bare-label
+# image in the "label media" regime and gives a sensible inches read-out.
+DEFAULT_IMAGE_DPI = 203
+
 
 def is_pdf(path: str) -> bool:
     return path.lower().endswith(".pdf")
+
+
+def image_dpi(path: str, img: Image.Image | None = None) -> int:
+    """Best-effort resolution (pixels per inch) of an image file.
+
+    Reads the file's DPI metadata (PNG pHYs, JPEG/TIFF resolution tags) and falls
+    back to ``DEFAULT_IMAGE_DPI`` when it is missing or implausible. PDFs are
+    rendered at a chosen DPI, so this is only meaningful for image inputs.
+    """
+    dpi = None
+    try:
+        if img is not None:
+            dpi = img.info.get("dpi")
+        else:
+            with Image.open(path) as im:
+                dpi = im.info.get("dpi")
+    except Exception:
+        dpi = None
+    if dpi:
+        val = dpi[0] if isinstance(dpi, (tuple, list)) else dpi
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            val = 0.0
+        # Some encoders write a bogus 1 dpi or 0 dpi; ignore anything sub-photo.
+        if val >= 72:
+            return int(round(val))
+    return DEFAULT_IMAGE_DPI
 
 
 def page_count(path: str) -> int:

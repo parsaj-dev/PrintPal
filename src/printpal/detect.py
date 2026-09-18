@@ -47,6 +47,13 @@ _ROTATION_FOR = {
 }
 
 
+# Page classification, used for the label count, smart routing and history.
+KIND_LABEL = "label"          # a shipping label (barcode-backed, or on label media)
+KIND_DOCUMENT = "document"    # a document-media page with no shipping barcode: a
+                              # packing slip, instructions sheet, invoice, ...
+KIND_BLANK = "blank"          # nothing to print
+
+
 @dataclass
 class LabelResult:
     image: Image.Image                 # cropped, upright label at detect DPI (preview)
@@ -58,7 +65,12 @@ class LabelResult:
     orientation: str = "UP"            # barcode orientation used for rotation
     detect_dpi: int = 200              # DPI the page was rasterized at
     is_full_page: bool = False         # True when the whole media is the label
+    kind: str = KIND_LABEL             # KIND_LABEL / KIND_DOCUMENT / KIND_BLANK
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def is_label(self) -> bool:
+        return self.kind == KIND_LABEL
 
 
 # -- low level helpers --------------------------------------------------------
@@ -143,6 +155,47 @@ def _components(ink: np.ndarray, dpi: int) -> list[tuple[int, int, int, int, int
     return comps
 
 
+def _grow_aligned(box: tuple[int, int, int, int],
+                  comps: list[tuple[int, int, int, int, int]], dpi: int
+                  ) -> tuple[int, int, int, int]:
+    """Grow ``box`` to swallow components that are part of the same label.
+
+    A component joins the label when it is horizontally aligned with the current
+    box (a meaningful x-overlap -- i.e. it sits in the same column) and separated
+    by only a small vertical gap. That reattaches the carrier band and address
+    block sitting above a barcode without reaching across the wider whitespace or
+    divider that sets instructions apart. Runs to a fixed point so a chain of
+    stacked blocks all come in.
+    """
+    gap_max = int(round(dpi * 0.7))          # bridge <= 0.7" of vertical whitespace
+    changed = True
+    while changed:
+        changed = False
+        bx0, by0, bx1, by1 = box
+        for cx0, cy0, cx1, cy1, _area in comps:
+            if cx0 >= bx0 and cy0 >= by0 and cx1 <= bx1 and cy1 <= by1:
+                continue  # already inside
+            overlap_x = min(bx1, cx1) - max(bx0, cx0)
+            if overlap_x <= 0:
+                continue
+            if overlap_x < 0.35 * min(bx1 - bx0, cx1 - cx0):
+                continue  # only clips the edge -- a neighbouring column, not ours
+            if cy0 >= by1:
+                gap = cy0 - by1
+            elif cy1 <= by0:
+                gap = by0 - cy1
+            else:
+                gap = 0
+            if gap > gap_max:
+                continue
+            grown = _union(box, (cx0, cy0, cx1, cy1))
+            if grown != box:
+                box = grown
+                bx0, by0, bx1, by1 = box
+                changed = True
+    return box
+
+
 def _label_block(ink: np.ndarray, barcode_rects, dpi: int
                  ) -> tuple[tuple[int, int, int, int], str]:
     """Find the label's bounding box on a document-sized page."""
@@ -163,6 +216,10 @@ def _label_block(ink: np.ndarray, barcode_rects, dpi: int
     best = max(comps, key=bc_overlap)
     box = best[:4]
 
+    # Reattach the address/carrier blocks stacked above (or below) the barcode
+    # that the morphological close left as separate components.
+    box = _grow_aligned(box, comps, dpi)
+
     # Any barcode that is mostly outside the chosen block belongs to the label
     # too (e.g. a tracking barcode set apart by a divider). Union its component.
     for r in barcode_rects:
@@ -170,7 +227,7 @@ def _label_block(ink: np.ndarray, barcode_rects, dpi: int
         if _rect_overlap(box, r) < 0.5 * r_area:
             for c in comps:
                 if _rect_overlap(c[:4], r) > 0:
-                    box = _union(box, c[:4])
+                    box = _union(box, _grow_aligned(c[:4], comps, dpi))
                     break
             else:
                 box = _union(box, r)
@@ -219,10 +276,12 @@ def find_label(img: Image.Image, dpi: int = 200,
         return LabelResult(
             image=img, confidence=0.0, method="no-content",
             barcodes_in=0, barcodes_out=0, box=(0, 0, W, H),
-            detect_dpi=dpi, warnings=["This page looks blank -- no content to print."],
+            detect_dpi=dpi, kind=KIND_BLANK,
+            warnings=["This page looks blank -- no content to print."],
         )
 
     if is_label_media:
+        kind = KIND_LABEL
         is_full_page = True
         if barcodes:
             # Trim the outer white margin so the printer fills the media, but keep
@@ -239,6 +298,7 @@ def find_label(img: Image.Image, dpi: int = 200,
             warnings.append("No barcode found on this label -- printing the whole page.")
     else:
         is_full_page = False
+        kind = KIND_LABEL if barcodes else KIND_DOCUMENT
         box, method = _label_block(ink, brects, dpi)
         if barcodes:
             confidence = 0.9
@@ -286,6 +346,7 @@ def find_label(img: Image.Image, dpi: int = 200,
         orientation=orientation,
         detect_dpi=dpi,
         is_full_page=is_full_page,
+        kind=kind,
         warnings=warnings,
     )
 

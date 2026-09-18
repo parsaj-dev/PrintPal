@@ -344,7 +344,7 @@ class MainWindow:
     def _build_rail(self, parent):
         rail_wrap = ttk.Frame(parent, style="Rail.TFrame", padding=(8, 8))
         rail_wrap.pack(side="left", fill="y", padx=(0, 14))
-        ttk.Label(rail_wrap, text=f"{len(self.labels)} labels",
+        ttk.Label(rail_wrap, text=f"{len(self.labels)} pages",
                   background=theme.RAIL_BG, foreground=theme.INK_SOFT,
                   font=self.fonts.small).pack(anchor="w", pady=(0, 6))
 
@@ -607,11 +607,16 @@ class MainWindow:
                              "This file doesn't seem to contain anything to print.")
             return
         self._show_results()
-        printable = len(labels)
+        n_labels = sum(1 for lab in labels if lab.is_label)
         best = labels[0].result
-        self.status_var.set(
-            f"Found {printable} label{'s' if printable != 1 else ''} · "
-            f"{int(best.confidence * 100)}% confident")
+        if n_labels == 0:
+            self.status_var.set(
+                f"No shipping label detected in {len(labels)} page"
+                f"{'s' if len(labels) != 1 else ''} — showing the raw pages.")
+        else:
+            self.status_var.set(
+                f"Found {n_labels} label{'s' if n_labels != 1 else ''} · "
+                f"{int(best.confidence * 100)}% confident")
         if self._on_ready:
             self._on_ready(self)
 

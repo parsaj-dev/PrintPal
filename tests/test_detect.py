@@ -14,6 +14,7 @@ from PIL import Image
 
 from printpal import detect
 from printpal.detect import (
+    KIND_BLANK, KIND_DOCUMENT, KIND_LABEL,
     LabelResult, find_label, scale_box,
     _content_bbox, _rect_overlap, _union, _rotate_upright, _dominant_orientation,
 )
@@ -172,6 +173,55 @@ class TestOrientationApplied:
         assert r.orientation == "RIGHT"
         # a RIGHT crop is rotated 90 deg, so the preview is wider than tall
         assert r.image.width > r.image.height
+
+
+class TestKind:
+    def test_blank_is_blank(self):
+        assert find_label(blank(400, 400), dpi=200).kind == KIND_BLANK
+
+    def test_label_media_is_label(self, monkeypatch):
+        img = with_block(blank(800, 1200), (40, 40, 760, 1160))
+        inject_barcodes(monkeypatch, [_FakeBarcode(100, 500, 400, 80, "UP")])
+        r = find_label(img, dpi=200)
+        assert r.kind == KIND_LABEL and r.is_label
+
+    def test_document_with_barcode_is_label(self, monkeypatch):
+        img = blank(1700, 2200)
+        img = with_block(img, (300, 120, 1400, 780))
+        inject_barcodes(monkeypatch, [_FakeBarcode(500, 300, 500, 120, "UP")])
+        r = find_label(img, dpi=200)
+        assert r.kind == KIND_LABEL
+
+    def test_document_without_barcode_is_document(self, monkeypatch):
+        # A packing slip / instructions sheet: content but no shipping barcode.
+        img = with_block(blank(1700, 2200), (250, 200, 1450, 1400))
+        inject_barcodes(monkeypatch, [])
+        r = find_label(img, dpi=200)
+        assert r.kind == KIND_DOCUMENT and not r.is_label
+
+
+class TestGrowAligned:
+    def test_stacked_label_blocks_reattach(self, monkeypatch):
+        # A label split by the morphological close into an address block and a
+        # barcode block with a small gap; instructions sit far below.
+        img = blank(1700, 2200)
+        img = with_block(img, (300, 150, 1400, 400))     # address block (top)
+        img = with_block(img, (300, 520, 1400, 820))     # barcode block, gap 120px=0.6"
+        img = with_block(img, (300, 1300, 1400, 2050))   # instructions, gap 480px=2.4"
+        inject_barcodes(monkeypatch, [_FakeBarcode(500, 600, 500, 120, "UP")])
+        r = find_label(img, dpi=200)
+        assert r.box[1] < 400, f"top block not reattached: {r.box}"
+        assert r.box[3] < 1000, f"instructions leaked into crop: {r.box}"
+
+    def test_offset_column_not_grabbed(self, monkeypatch):
+        # A block that doesn't share the label's column must not join. The x-gap
+        # (120px) is wide enough that the morphological close leaves them separate.
+        img = blank(1700, 2200)
+        img = with_block(img, (200, 300, 700, 700))      # label (left)
+        img = with_block(img, (820, 300, 1500, 700))     # neighbour column (right)
+        inject_barcodes(monkeypatch, [_FakeBarcode(300, 400, 300, 120, "UP")])
+        r = find_label(img, dpi=200)
+        assert r.box[2] < 800, f"grabbed the neighbouring column: {r.box}"
 
 
 # -- integration against a real label -----------------------------------------

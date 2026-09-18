@@ -136,8 +136,11 @@ if sys.platform == "win32":
             gdi32.SetStretchBltMode(raw_hdc, _HALFTONE)
             gdi32.SetBrushOrgEx(raw_hdc, 0, 0, None)
 
+            # One spooler document with N identical pages, not N separate jobs --
+            # so the queue shows a single "PrintPal Label" entry and the copies
+            # stay together on label stock.
+            hdc.StartDoc("PrintPal Label")
             for _ in range(copies):
-                hdc.StartDoc("PrintPal Label")
                 hdc.StartPage()
                 gdi32.StretchDIBits(
                     raw_hdc,
@@ -148,7 +151,7 @@ if sys.platform == "win32":
                     win32con.SRCCOPY,
                 )
                 hdc.EndPage()
-                hdc.EndDoc()
+            hdc.EndDoc()
         except Exception:
             try:
                 hdc.AbortDoc()
