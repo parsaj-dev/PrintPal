@@ -11,6 +11,7 @@ queue is unit-tested headless; the desktop app passes ``printing.print_label``.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -76,7 +77,7 @@ class PrintQueue:
         Detection failures (or a file with nothing printable) enqueue a single
         FAILED item so the user sees why nothing came out.
         """
-        title = title or source
+        title = title or os.path.basename(source) or source
         try:
             labels = process_file(source, self.config)
         except Exception as e:  # noqa: BLE001 - surface any read/detect failure

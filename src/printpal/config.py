@@ -23,6 +23,7 @@ DEFAULT_COPIES = 1
 DEFAULT_AUTO_PRINT = False
 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE = 0.85
 DEFAULT_SPLIT_NUP = True
+DEFAULT_DARK_MODE = False
 
 _CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 CONFIG_PATH = _CONFIG_DIR / "config.toml"
@@ -66,6 +67,7 @@ class Config:
     auto_print: bool = DEFAULT_AUTO_PRINT
     auto_print_min_confidence: float = DEFAULT_AUTO_PRINT_MIN_CONFIDENCE
     split_nup: bool = DEFAULT_SPLIT_NUP
+    dark_mode: bool = DEFAULT_DARK_MODE
 
     # Backwards-compatible alias: older configs and callers used `dpi` for the
     # detection raster resolution.
@@ -107,6 +109,7 @@ class Config:
             f"auto_print = {str(self.auto_print).lower()}",
             f"auto_print_min_confidence = {self.auto_print_min_confidence}",
             f"split_nup = {str(self.split_nup).lower()}",
+            f"dark_mode = {str(self.dark_mode).lower()}",
         ]
         CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -141,4 +144,5 @@ class Config:
                 data.get("auto_print_min_confidence", DEFAULT_AUTO_PRINT_MIN_CONFIDENCE),
                 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE),
             split_nup=_as_bool(data.get("split_nup", DEFAULT_SPLIT_NUP), DEFAULT_SPLIT_NUP),
+            dark_mode=_as_bool(data.get("dark_mode", DEFAULT_DARK_MODE), DEFAULT_DARK_MODE),
         ).clamped()

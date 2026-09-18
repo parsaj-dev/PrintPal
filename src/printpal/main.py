@@ -2,8 +2,8 @@
 
 Resolves an input file (CLI arg > clipboard), opens the main window, and lets it
 drive detection, preview and printing. A single running instance is reused: a
-second launch hands its file off to the window that is already open instead of
-stacking up duplicates.
+second launch (or a print to the virtual printer) delivers its file through the
+ingest spool, which the running window polls, instead of stacking up duplicates.
 """
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ import os
 import sys
 import traceback
 
-from printpal.config import Config, _CONFIG_DIR
+from printpal.config import Config
 from printpal.log import get_logger
 
-_HANDOFF_FILE = _CONFIG_DIR / "handoff.txt"
 _MUTEX_NAME = "Global\\PrintPalSingleInstance"
 
 
@@ -78,15 +77,6 @@ def _resolve_input(open_path: str | None) -> str | None:
         return None
 
 
-def _hand_off(path: str | None) -> None:
-    """Deliver a file to the already-running instance via a handoff file."""
-    try:
-        _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _HANDOFF_FILE.write_text(path or "", encoding="utf-8")
-    except OSError:
-        pass
-
-
 def _resolve_printer(config: Config, log) -> None:
     """If the saved printer isn't installed, fall back to the system default or
     the first available printer -- no modal, the UI lets the user change it."""
@@ -129,11 +119,14 @@ def main() -> None:
 
     mutex = _acquire_mutex()
     if mutex is None:
-        # Another instance owns the UI. A spooled job it will poll for; a plain
-        # file open still goes through the handoff file.
+        # Another instance owns the UI. Deliver via the spool, which it polls.
         if input_path:
-            log.info("Already running -- handing off %r and exiting.", input_path)
-            _hand_off(input_path)
+            try:
+                from printpal import ingest
+                ingest.submit(input_path, origin=ingest.ORIGIN_HANDOFF)
+                log.info("Already running -- spooled %r and exiting.", input_path)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Handoff spool failed: %s", e)
         else:
             log.info("Already running -- job spooled, exiting.")
         return
@@ -143,7 +136,7 @@ def main() -> None:
     except Exception:
         log.error("Unhandled error:\n%s", traceback.format_exc())
         try:
-            from printpal.ui import show_error
+            from printpal.qtui.app import show_error
             show_error("PrintPal Error",
                        "Something went wrong. Check the log file for details.")
         except Exception:
@@ -159,13 +152,6 @@ def _run(log, input_path: str | None) -> None:
              config.printer, config.detect_dpi, config.print_dpi)
     _resolve_printer(config, log)
 
-    # Clear any stale handoff before we start watching it.
-    try:
-        if _HANDOFF_FILE.exists():
-            _HANDOFF_FILE.unlink()
-    except OSError:
-        pass
-
     # Clear last session's spooled jobs before we start watching for new ones.
     try:
         from printpal import ingest
@@ -175,84 +161,9 @@ def _run(log, input_path: str | None) -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("Spool cleanup failed: %s", e)
 
-    from printpal.ui import MainWindow
-    window = MainWindow(config, initial_path=input_path)
-    _install_handoff_watch(window)
-    _install_spool_watch(window, log)
-    _install_autoprint(window, config, log)
-    log.info("Main window opened (initial file: %s)", input_path)
-    window.run()
-
-
-def _install_spool_watch(window, log) -> None:
-    """Drain the ingest spool into the window: printed / watched jobs appear
-    here the same as a dropped file. One job at a time so the preview keeps up;
-    the batch queue (a later feature) will drain many at once."""
-    def poll():
-        try:
-            if not getattr(window, "_busy", False):
-                from printpal import ingest
-                job = ingest.claim_one()
-                if job is not None:
-                    log.info("Ingesting spooled job %s (%s)", job.doc_path.name, job.origin)
-                    try:
-                        window.root.deiconify()
-                        window.root.lift()
-                        window.root.focus_force()
-                    except Exception:
-                        pass
-                    window.load_path(str(job.doc_path))
-        except Exception as e:  # noqa: BLE001
-            log.warning("Spool poll failed: %s", e)
-        try:
-            window.root.after(700, poll)
-        except Exception:
-            pass
-    window.root.after(700, poll)
-
-
-def _install_handoff_watch(window) -> None:
-    """Poll the handoff file so a second launch opens its file in this window."""
-    def poll():
-        try:
-            if _HANDOFF_FILE.exists():
-                text = _HANDOFF_FILE.read_text(encoding="utf-8").strip()
-                _HANDOFF_FILE.unlink()
-                try:
-                    window.root.deiconify()
-                    window.root.lift()
-                    window.root.focus_force()
-                except Exception:
-                    pass
-                if text and os.path.isfile(text):
-                    window.load_path(text)
-        except OSError:
-            pass
-        try:
-            window.root.after(600, poll)
-        except Exception:
-            pass
-    window.root.after(600, poll)
-
-
-def _install_autoprint(window, config: Config, log) -> None:
-    """When enabled, print a single high-confidence label without a click."""
-    if not config.auto_print:
-        return
-
-    original = window._on_processing_done
-
-    def wrapped(labels):
-        original(labels)
-        try:
-            if (len(labels) == 1 and labels[0].is_printable
-                    and labels[0].confidence >= config.auto_print_min_confidence):
-                log.info("Auto-printing (confidence %.2f)", labels[0].confidence)
-                window.root.after(200, window._print_current)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Auto-print skipped: %s", e)
-
-    window._on_processing_done = wrapped
+    log.info("Main window opening (initial file: %s)", input_path)
+    from printpal.qtui.app import run_app
+    run_app(config, initial_path=input_path, log=log)
 
 
 if __name__ == "__main__":

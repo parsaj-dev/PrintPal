@@ -31,16 +31,27 @@ _winprinter_datas = [
     ("winprinter/README.md", "winprinter"),
 ]
 
+# Trim Qt modules PrintPal never uses -- keeps the PySide6 bundle small.
+_qt_excludes = [
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngine",
+    "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuick3D", "PySide6.Qt3DCore",
+    "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets", "PySide6.QtCharts",
+    "PySide6.QtDataVisualization", "PySide6.QtBluetooth", "PySide6.QtPositioning",
+    "PySide6.QtSensors", "PySide6.QtSerialPort", "PySide6.QtSql", "PySide6.QtTest",
+    "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
+    "tkinter", "_tkinter",
+]
+
 a = Analysis(
     ["src/printpal/main.py"],
     pathex=["src"],
     binaries=zbar_dll,
     datas=[("assets/icon.png", "assets")] + _winprinter_datas,
-    hiddenimports=["printpal"],
+    hiddenimports=["printpal", "printpal.qtui.app", "printpal.qtui.window"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=_qt_excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -81,7 +92,7 @@ port = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["PySide6", "tkinter", "_tkinter", "numpy", "cv2", "PIL", "pymupdf"],
     cipher=block_cipher,
     noarchive=False,
 )
