@@ -72,3 +72,25 @@ class TestMultiPage:
         assert labels[1].kind == KIND_DOCUMENT      # the packing slip
         assert labels[2].kind == KIND_LABEL
         assert sum(1 for lab in labels if lab.is_label) == 2
+
+
+@needs_barcode
+class TestNup:
+    def test_two_up_splits_into_two(self, fixtures):
+        labels = process_file(str(fixtures / "twoup.pdf"), Config())
+        assert len(labels) == 2
+        trackings = {lab.result.barcode_data[0] for lab in labels}
+        assert len(trackings) == 2                  # two distinct labels
+        for lab in labels:
+            assert lab.is_label and lab.region_count == 2
+
+    def test_four_up_splits_into_four(self, fixtures):
+        labels = process_file(str(fixtures / "fourup.pdf"), Config())
+        assert len(labels) == 4
+        assert len({lab.result.barcode_data[0] for lab in labels}) == 4
+
+    def test_split_can_be_disabled(self, fixtures):
+        cfg = Config()
+        cfg.split_nup = False
+        labels = process_file(str(fixtures / "twoup.pdf"), cfg)
+        assert len(labels) == 1                     # whole page kept as one

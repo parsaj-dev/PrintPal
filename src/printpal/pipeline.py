@@ -16,7 +16,7 @@ from typing import Callable
 from PIL import Image
 
 from printpal.config import Config
-from printpal.detect import KIND_BLANK, LabelResult, find_label, _rotate_upright
+from printpal.detect import KIND_BLANK, LabelResult, find_labels, _rotate_upright
 from printpal.rasterize import (
     image_dpi, is_document, load_image, page_count, rasterize_pdf_region,
 )
@@ -41,6 +41,8 @@ class ProcessedLabel:
     page_index: int
     page_count: int
     result: LabelResult
+    region_index: int = 0               # which label on the page (N-up: 0,1,2,...)
+    region_count: int = 1               # labels found on this page
     manual_rotation: int = 0            # extra clockwise degrees (0/90/180/270)
     _print_cache: Image.Image | None = field(default=None, repr=False)
 
@@ -129,8 +131,11 @@ def process_file(path: str, config: Config,
         # own (or a sensible default), so the physical-size regime and the inches
         # read-out stay honest instead of assuming the detection DPI.
         dpi = config.detect_dpi if is_document(path) else image_dpi(path, img)
-        result = find_label(img, dpi=dpi, margin_inches=config.crop_margin_inches)
-        labels.append(ProcessedLabel(path, i, capped, result))
+        found = find_labels(img, dpi=dpi, margin_inches=config.crop_margin_inches,
+                            split_nup=config.split_nup)
+        for r_idx, result in enumerate(found):
+            labels.append(ProcessedLabel(path, i, capped, result,
+                                         region_index=r_idx, region_count=len(found)))
 
     if total > MAX_PAGES:
         for lab in labels:

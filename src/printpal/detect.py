@@ -66,6 +66,7 @@ class LabelResult:
     detect_dpi: int = 200              # DPI the page was rasterized at
     is_full_page: bool = False         # True when the whole media is the label
     kind: str = KIND_LABEL             # KIND_LABEL / KIND_DOCUMENT / KIND_BLANK
+    barcode_data: list[str] = field(default_factory=list)  # decoded payloads
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -113,6 +114,29 @@ def _barcode_rects(barcodes) -> list[tuple[int, int, int, int]]:
         r = b.rect
         rects.append((r.left, r.top, r.left + r.width, r.top + r.height))
     return rects
+
+
+def _barcode_payloads(barcodes) -> list[str]:
+    """Decoded barcode text (deduped, order preserved). Bytes -> UTF-8/latin-1."""
+    out: list[str] = []
+    for b in barcodes:
+        data = getattr(b, "data", None)
+        if data is None:
+            continue
+        if isinstance(data, bytes):
+            try:
+                data = data.decode("utf-8")
+            except UnicodeDecodeError:
+                data = data.decode("latin-1", "replace")
+        data = str(data).strip()
+        if data and data not in out:
+            out.append(data)
+    return out
+
+
+def _barcode_center(b) -> tuple[float, float]:
+    r = b.rect
+    return (r.left + r.width / 2.0, r.top + r.height / 2.0)
 
 
 def _dominant_orientation(barcodes) -> str:
@@ -267,6 +291,7 @@ def find_label(img: Image.Image, dpi: int = 200,
                         "width": int(d.rect.width / 1.5), "height": int(d.rect.height / 1.5)})
                     s.orientation = getattr(d, "orientation", "UP")
                     s.type = d.type
+                    s.data = getattr(d, "data", b"")
             barcodes = [_Scaled(d) for d in retry]
 
     warnings: list[str] = []
@@ -347,8 +372,112 @@ def find_label(img: Image.Image, dpi: int = 200,
         detect_dpi=dpi,
         is_full_page=is_full_page,
         kind=kind,
+        barcode_data=_barcode_payloads(barcodes),
         warnings=warnings,
     )
+
+
+# -- N-up: multiple labels on one page ----------------------------------------
+
+def _cluster_1d(values: list[float], gap: float) -> list[list[float]]:
+    """Group sorted values into clusters, starting a new one on a gap > `gap`."""
+    sv = sorted(values)
+    clusters = [[sv[0]]]
+    for v in sv[1:]:
+        if v - clusters[-1][-1] > gap:
+            clusters.append([v])
+        else:
+            clusters[-1].append(v)
+    return clusters
+
+
+def _widest_zero_mid(profile: np.ndarray, lo: int, hi: int, min_run: int) -> int | None:
+    """Midpoint of the widest all-zero run in profile[lo:hi], or None if the
+    widest is shorter than `min_run`. This is the gutter between two labels."""
+    lo = max(0, lo)
+    hi = min(len(profile), hi)
+    best_mid, best_len, run_start = None, 0, None
+    for i in range(lo, hi):
+        if profile[i] == 0:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None and i - run_start > best_len:
+                best_len, best_mid = i - run_start, (run_start + i) // 2
+            run_start = None
+    if run_start is not None and hi - run_start > best_len:
+        best_len, best_mid = hi - run_start, (run_start + hi) // 2
+    return best_mid if best_len >= min_run else None
+
+
+def _axis_bounds(centers: list[float], profile: np.ndarray, dpi: int, page_len: int,
+                 cluster_gap_in: float = 1.6, min_gutter_in: float = 0.1) -> list[int]:
+    """Cut positions along one axis: cluster the barcode centres, then split only
+    at a genuine whitespace gutter *between* adjacent clusters. Returns
+    ``[0, page_len]`` (no split) unless real between-label gutters are found -- so
+    a single label's internal whitespace never causes a cut."""
+    if len(centers) < 2:
+        return [0, page_len]
+    clusters = _cluster_1d(centers, cluster_gap_in * dpi)
+    if len(clusters) < 2:
+        return [0, page_len]
+    min_gutter = max(3, int(round(min_gutter_in * dpi)))
+    bounds = [0]
+    for k in range(len(clusters) - 1):
+        lo, hi = int(max(clusters[k])), int(min(clusters[k + 1]))
+        mid = _widest_zero_mid(profile, lo, hi, min_gutter)
+        if mid is not None:
+            bounds.append(mid)
+    bounds.append(page_len)
+    return sorted(set(bounds))
+
+
+def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
+                split_nup: bool = True) -> list[LabelResult]:
+    """Detect every label on a page, splitting N-up sheets into one per label.
+
+    Amazon/Etsy-style pages that carry 2 or 4 identical labels in a grid are
+    split into individual 4x6 crops: the barcodes are clustered into a grid, the
+    page is cut at the whitespace gutters *between* those clusters, and each cell
+    is run through the normal single-label detector. Ordinary pages (and pages
+    whose barcodes don't form a clean grid) return a single result identical to
+    `find_label`.
+    """
+    if not split_nup:
+        return [find_label(img, dpi, margin_inches)]
+
+    rgb = np.asarray(img.convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    ink = _ink_mask(gray)
+    H, W = ink.shape
+
+    barcodes = _decode(img, gray)
+    if len(barcodes) < 2:
+        return [find_label(img, dpi, margin_inches)]
+
+    centers = [_barcode_center(b) for b in barcodes]
+    xb = _axis_bounds([c[0] for c in centers], ink.sum(axis=0), dpi, W)
+    yb = _axis_bounds([c[1] for c in centers], ink.sum(axis=1), dpi, H)
+    if len(xb) <= 2 and len(yb) <= 2:
+        return [find_label(img, dpi, margin_inches)]  # no between-label gutter -> single
+
+    results: list[LabelResult] = []
+    for j in range(len(yb) - 1):
+        for i in range(len(xb) - 1):
+            cx0, cy0, cx1, cy1 = xb[i], yb[j], xb[i + 1], yb[j + 1]
+            if not any(cx0 <= cx < cx1 and cy0 <= cy < cy1 for cx, cy in centers):
+                continue  # a cell with no barcode is not a label
+            cell = img.crop((cx0, cy0, cx1, cy1))
+            r = find_label(cell, dpi, margin_inches)
+            if r.kind == KIND_BLANK:
+                continue
+            bx0, by0, bx1, by1 = r.box
+            r.box = (bx0 + cx0, by0 + cy0, bx1 + cx0, by1 + cy0)  # back to page coords
+            results.append(r)
+
+    if sum(1 for r in results if r.is_label) >= 2:
+        return results
+    return [find_label(img, dpi, margin_inches)]
 
 
 def scale_box(box: tuple[int, int, int, int], from_dpi: int, to_dpi: int,

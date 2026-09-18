@@ -17,6 +17,7 @@ from printpal.detect import (
     KIND_BLANK, KIND_DOCUMENT, KIND_LABEL,
     LabelResult, find_label, scale_box,
     _content_bbox, _rect_overlap, _union, _rotate_upright, _dominant_orientation,
+    _cluster_1d, _widest_zero_mid, _axis_bounds, _barcode_payloads,
 )
 from printpal.rasterize import load_image, rasterize_pdf
 
@@ -37,10 +38,12 @@ class _Rect:
 
 
 class _FakeBarcode:
-    def __init__(self, left, top, width, height, orientation="UP", type="CODE128"):
+    def __init__(self, left, top, width, height, orientation="UP", type="CODE128",
+                 data=b"1Z999AA10123456784"):
         self.rect = _Rect(left, top, width, height)
         self.orientation = orientation
         self.type = type
+        self.data = data
 
 
 def inject_barcodes(monkeypatch, barcodes):
@@ -222,6 +225,45 @@ class TestGrowAligned:
         inject_barcodes(monkeypatch, [_FakeBarcode(300, 400, 300, 120, "UP")])
         r = find_label(img, dpi=200)
         assert r.box[2] < 800, f"grabbed the neighbouring column: {r.box}"
+
+
+class TestBarcodePayloads:
+    def test_decoded_data_captured(self, monkeypatch):
+        img = with_block(blank(800, 1200), (40, 40, 760, 1160))
+        inject_barcodes(monkeypatch, [_FakeBarcode(100, 500, 400, 80, data=b"1Z12345")])
+        r = find_label(img, dpi=200)
+        assert r.barcode_data == ["1Z12345"]
+
+    def test_payloads_dedupe_and_decode(self):
+        bcs = [_FakeBarcode(0, 0, 10, 10, data=b"ABC"),
+               _FakeBarcode(0, 0, 10, 10, data=b"ABC"),
+               _FakeBarcode(0, 0, 10, 10, data="XYZ")]
+        assert _barcode_payloads(bcs) == ["ABC", "XYZ"]
+
+
+class TestNupHelpers:
+    def test_cluster_1d_splits_on_gap(self):
+        assert _cluster_1d([10, 20, 900, 910], gap=100) == [[10, 20], [900, 910]]
+
+    def test_cluster_1d_single_group(self):
+        assert _cluster_1d([10, 30, 50], gap=100) == [[10, 30, 50]]
+
+    def test_widest_zero_mid(self):
+        prof = np.ones(1000, dtype=int)
+        prof[400:500] = 0            # a 100-wide gutter
+        assert _widest_zero_mid(prof, 300, 700, min_run=50) == 450
+        assert _widest_zero_mid(prof, 300, 700, min_run=200) is None
+
+    def test_axis_bounds_two_columns(self):
+        prof = np.ones(1600, dtype=int)
+        prof[780:820] = 0            # gutter between two columns
+        bounds = _axis_bounds([400.0, 1200.0], prof, dpi=200, page_len=1600)
+        assert bounds[0] == 0 and bounds[-1] == 1600
+        assert any(790 <= b <= 810 for b in bounds)
+
+    def test_axis_bounds_no_split_single_cluster(self):
+        prof = np.ones(1600, dtype=int)
+        assert _axis_bounds([400.0, 500.0], prof, dpi=200, page_len=1600) == [0, 1600]
 
 
 # -- integration against a real label -----------------------------------------

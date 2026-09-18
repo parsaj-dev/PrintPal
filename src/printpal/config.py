@@ -22,6 +22,7 @@ DEFAULT_MARGIN_INCHES = 0.08
 DEFAULT_COPIES = 1
 DEFAULT_AUTO_PRINT = False
 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE = 0.85
+DEFAULT_SPLIT_NUP = True
 
 _CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 CONFIG_PATH = _CONFIG_DIR / "config.toml"
@@ -52,6 +53,11 @@ def _as_bool(value, fallback: bool) -> bool:
 @dataclass
 class Config:
     printer: str = DEFAULT_PRINTER
+    # Smart routing (opt-in, never automatic): where 4x6 labels vs paper
+    # documents go when the user enables routing for a job. Empty falls back to
+    # `printer`.
+    thermal_printer: str = ""
+    paper_printer: str = ""
     media_size: str = DEFAULT_MEDIA
     detect_dpi: int = DEFAULT_DETECT_DPI
     print_dpi: int = DEFAULT_PRINT_DPI
@@ -59,6 +65,7 @@ class Config:
     copies: int = DEFAULT_COPIES
     auto_print: bool = DEFAULT_AUTO_PRINT
     auto_print_min_confidence: float = DEFAULT_AUTO_PRINT_MIN_CONFIDENCE
+    split_nup: bool = DEFAULT_SPLIT_NUP
 
     # Backwards-compatible alias: older configs and callers used `dpi` for the
     # detection raster resolution.
@@ -85,9 +92,13 @@ class Config:
         # Escape backslashes/quotes so a Windows printer name never breaks TOML.
         printer = self.printer.replace("\\", "\\\\").replace('"', '\\"')
         media = self.media_size.replace("\\", "\\\\").replace('"', '\\"')
+        thermal = self.thermal_printer.replace("\\", "\\\\").replace('"', '\\"')
+        paper = self.paper_printer.replace("\\", "\\\\").replace('"', '\\"')
         lines = [
             "# PrintPal configuration -- safe to edit by hand.",
             f'printer = "{printer}"',
+            f'thermal_printer = "{thermal}"',
+            f'paper_printer = "{paper}"',
             f'media_size = "{media}"',
             f"detect_dpi = {self.detect_dpi}",
             f"print_dpi = {self.print_dpi}",
@@ -95,6 +106,7 @@ class Config:
             f"copies = {self.copies}",
             f"auto_print = {str(self.auto_print).lower()}",
             f"auto_print_min_confidence = {self.auto_print_min_confidence}",
+            f"split_nup = {str(self.split_nup).lower()}",
         ]
         CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -116,6 +128,8 @@ class Config:
                              DEFAULT_DETECT_DPI)
         return cls(
             printer=str(data.get("printer", DEFAULT_PRINTER)),
+            thermal_printer=str(data.get("thermal_printer", "")),
+            paper_printer=str(data.get("paper_printer", "")),
             media_size=str(data.get("media_size", DEFAULT_MEDIA)),
             detect_dpi=detect_dpi,
             print_dpi=_as_int(data.get("print_dpi", DEFAULT_PRINT_DPI), DEFAULT_PRINT_DPI),
@@ -126,4 +140,5 @@ class Config:
             auto_print_min_confidence=_as_float(
                 data.get("auto_print_min_confidence", DEFAULT_AUTO_PRINT_MIN_CONFIDENCE),
                 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE),
+            split_nup=_as_bool(data.get("split_nup", DEFAULT_SPLIT_NUP), DEFAULT_SPLIT_NUP),
         ).clamped()
