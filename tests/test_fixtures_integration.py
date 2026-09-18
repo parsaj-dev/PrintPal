@@ -8,7 +8,6 @@ cleanly when it is absent.
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 
 import pytest
 
@@ -16,26 +15,17 @@ from printpal.config import Config
 from printpal.detect import KIND_DOCUMENT, KIND_LABEL
 from printpal.pipeline import process_file
 
-_TOOLS = Path(__file__).resolve().parent.parent / "tools" / "generate_fixtures.py"
-
 barcode_missing = importlib.util.find_spec("barcode") is None
 needs_barcode = pytest.mark.skipif(
     barcode_missing, reason="python-barcode not installed (pip install -e '.[dev]')")
 
 
-def _load_generator():
-    spec = importlib.util.spec_from_file_location("generate_fixtures", _TOOLS)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.fixture(scope="module")
-def fixtures(tmp_path_factory):
+def fixtures(tmp_path_factory, tool_loader):
     if barcode_missing:
         pytest.skip("python-barcode not installed")
     out = tmp_path_factory.mktemp("fixtures")
-    _load_generator().generate(str(out))
+    tool_loader("generate_fixtures").generate(str(out))
     return out
 
 

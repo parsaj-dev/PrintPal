@@ -18,7 +18,7 @@ from PIL import Image
 from printpal.config import Config
 from printpal.detect import KIND_BLANK, LabelResult, find_label, _rotate_upright
 from printpal.rasterize import (
-    image_dpi, is_pdf, load_image, page_count, rasterize_pdf_region,
+    image_dpi, is_document, load_image, page_count, rasterize_pdf_region,
 )
 
 # Guard against someone copying a giant multi-hundred-page PDF by mistake.
@@ -91,7 +91,7 @@ class ProcessedLabel:
         if self._print_cache is not None:
             return self._print_cache
 
-        if is_pdf(self.source_path):
+        if is_document(self.source_path):
             base = rasterize_pdf_region(
                 self.source_path, self.result.box,
                 self.result.detect_dpi, config.print_dpi, page=self.page_index,
@@ -125,10 +125,10 @@ def process_file(path: str, config: Config,
         if progress:
             progress(f"Finding label{'' if capped == 1 else f' on page {i + 1}'}…",
                      i, capped)
-        # PDFs are rendered at a known DPI; image files carry their own (or a
-        # sensible default), so the physical-size regime and the inches read-out
-        # stay honest instead of assuming the detection DPI.
-        dpi = config.detect_dpi if is_pdf(path) else image_dpi(path, img)
+        # Documents (PDF/XPS) are rendered at a known DPI; image files carry their
+        # own (or a sensible default), so the physical-size regime and the inches
+        # read-out stay honest instead of assuming the detection DPI.
+        dpi = config.detect_dpi if is_document(path) else image_dpi(path, img)
         result = find_label(img, dpi=dpi, margin_inches=config.crop_margin_inches)
         labels.append(ProcessedLabel(path, i, capped, result))
 

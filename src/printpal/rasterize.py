@@ -12,6 +12,12 @@ import pymupdf
 
 _SUPPORTED_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp")
 
+# Multi-page, vector documents MuPDF renders at a chosen DPI. XPS/OXPS are here
+# because the "PrintPal" virtual printer emits XPS -- MuPDF reads it natively, so
+# a printed job flows through the exact same engine as a dropped PDF, with no
+# Ghostscript (and no AGPL) anywhere in the picture.
+_DOCUMENT_EXT = (".pdf", ".xps", ".oxps")
+
 # When an image file carries no usable resolution metadata we can't know its true
 # physical size. We assume it was produced at a thermal label printer's native
 # resolution (203 dpi is typical for Zebra/Rollo/DYMO), which keeps a bare-label
@@ -21,6 +27,11 @@ DEFAULT_IMAGE_DPI = 203
 
 def is_pdf(path: str) -> bool:
     return path.lower().endswith(".pdf")
+
+
+def is_document(path: str) -> bool:
+    """True for a page-based vector document MuPDF renders (PDF, XPS, OXPS)."""
+    return path.lower().endswith(_DOCUMENT_EXT)
 
 
 def image_dpi(path: str, img: Image.Image | None = None) -> int:
@@ -52,8 +63,8 @@ def image_dpi(path: str, img: Image.Image | None = None) -> int:
 
 
 def page_count(path: str) -> int:
-    """Number of pages: PDF page count, or 1 for a single image file."""
-    if not is_pdf(path):
+    """Number of pages: document page count, or 1 for a single image file."""
+    if not is_document(path):
         return 1
     doc = pymupdf.open(path)
     try:
@@ -105,7 +116,7 @@ def rasterize_pdf_region(path: str, clip_box: tuple[int, int, int, int],
 
 
 def load_image(path: str, dpi: int = 200, page: int = 0) -> Image.Image:
-    """Load a PDF page or an image file as an RGB PIL Image."""
-    if is_pdf(path):
+    """Load a document page (PDF/XPS/OXPS) or an image file as an RGB PIL Image."""
+    if is_document(path):
         return rasterize_pdf(path, dpi, page)
     return Image.open(path).convert("RGB")

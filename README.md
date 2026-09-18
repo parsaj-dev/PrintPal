@@ -72,12 +72,25 @@ If no barcode is found, PrintPal keeps the whole page (or the largest content bl
 
 PrintPal accepts a label from any of:
 
-1. **Command line** -- `PrintPal.exe "C:\Downloads\label.pdf"`.
-2. **Clipboard file** -- right-click a file in Explorer and Copy, then press **Ctrl+V** (or launch PrintPal).
-3. **Clipboard path or URL** -- "Copy as path" (Ctrl+Shift+C) or a `file:///` URL from a browser.
-4. **Open button** -- pick a file from the window.
+1. **Print to PrintPal** -- from any app's **File > Print**, pick the **PrintPal** printer (see below).
+2. **Command line** -- `PrintPal.exe "C:\Downloads\label.pdf"`.
+3. **Clipboard file** -- right-click a file in Explorer and Copy, then press **Ctrl+V** (or launch PrintPal).
+4. **Clipboard path or URL** -- "Copy as path" (Ctrl+Shift+C) or a `file:///` URL from a browser.
+5. **Open button** -- pick a file from the window.
 
-Supports PDF plus PNG, JPEG, TIFF, BMP, GIF and WebP images. The source file is never modified, moved, or deleted. A second launch while PrintPal is open hands its file to the existing window instead of opening a duplicate.
+Supports PDF and XPS/OXPS documents plus PNG, JPEG, TIFF, BMP, GIF and WebP images. The source file is never modified, moved, or deleted. A second launch while PrintPal is open hands its file to the existing window instead of opening a duplicate.
+
+## Print to PrintPal from any app
+
+Install the optional **PrintPal virtual printer** and you can skip downloading and file-hunting entirely: in Chrome, Adobe Reader, or your carrier's portal, choose **File > Print > PrintPal**, and the rendered pages flow straight into PrintPal's crop-and-print engine.
+
+It captures each job as **XPS**, which PrintPal reads with its existing PDF engine (PyMuPDF/MuPDF) -- so there is **no Ghostscript and no AGPL code** involved, and it feeds the exact same detection and printing path as a dropped file. Install it during setup (tick "Install the PrintPal virtual printer") or later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "install_printer.ps1"
+```
+
+Full design, licensing notes, install/uninstall, and the Windows test plan are in [`winprinter/README.md`](winprinter/README.md).
 
 ## Configuration
 
@@ -128,14 +141,25 @@ src/printpal/
     rasterize.py     PDF/image to PIL Image via PyMuPDF (page + region rendering)
     clipboard.py     Windows clipboard (CF_HDROP, text path, file:/// URL)
     printing.py      Windows GDI print spooler, Lanczos-to-device scaling
+    ingest.py        job spool: one hand-off point for the virtual printer,
+                     a second launch, a future Downloads-watcher, batch queue
     config.py        tolerant TOML config in AppData
     log.py           rotating file logger
     theme.py         ttk design system (palette, fonts, styles)
     ui.py            main window, preview, thumbnail rail, settings
+winprinter/          optional Windows virtual printer (XPS -> ingest -> engine)
+    jobio.py, printpal_catcher.py, printpal_watcher.py, printpal_port.py
+    install_printer.ps1, uninstall_printer.ps1, README.md
+tools/               dev utilities (not shipped in the app)
+    generate_fixtures.py   synthetic labels with real barcodes for tests
+    xps.py                 pack PIL pages into an XPS (simulates the driver)
 tests/
     test_detect.py     detection unit + integration tests
     test_pipeline.py   orchestration, manual rotation, print render
     test_printing.py   image prep + DIB packing
+    test_ingest.py     job spool submit/claim/complete
+    test_xps.py        XPS ingest end-to-end (virtual-printer path)
+    test_winprinter.py catcher/watcher format sniffing + staging
     test_config.py     config round-trip + tolerance
-    test_rasterize.py  loader helpers
+    test_rasterize.py  loader helpers + image DPI
 ```

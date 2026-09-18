@@ -23,11 +23,19 @@ try:
 except ImportError:
     pass
 
+# The virtual-printer install scripts ship alongside the exe so the user can run
+# them from the install folder (see winprinter/README.md).
+_winprinter_datas = [
+    ("winprinter/install_printer.ps1", "."),
+    ("winprinter/uninstall_printer.ps1", "."),
+    ("winprinter/README.md", "winprinter"),
+]
+
 a = Analysis(
     ["src/printpal/main.py"],
     pathex=["src"],
     binaries=zbar_dll,
-    datas=[("assets/icon.png", "assets")],
+    datas=[("assets/icon.png", "assets")] + _winprinter_datas,
     hiddenimports=["printpal"],
     hookspath=[],
     hooksconfig={},
@@ -62,11 +70,52 @@ exe = EXE(
     icon="assets/icon.ico",
 )
 
+# PrintPalPort.exe -- the virtual-printer catcher/watcher. A console exe (a
+# redirection port monitor pipes the job to its stdin).
+port = Analysis(
+    ["winprinter/printpal_port.py"],
+    pathex=["winprinter"],
+    binaries=[],
+    datas=[],
+    hiddenimports=["printpal_catcher", "printpal_watcher", "jobio"],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+    noarchive=False,
+)
+port_pyz = PYZ(port.pure, port.zipped_data, cipher=block_cipher)
+port_exe = EXE(
+    port_pyz,
+    port.scripts,
+    [],
+    exclude_binaries=True,
+    name="PrintPalPort",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon="assets/icon.ico",
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
+    port_exe,
+    port.binaries,
+    port.zipfiles,
+    port.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

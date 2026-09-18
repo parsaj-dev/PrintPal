@@ -40,12 +40,37 @@ def _release_mutex(handle) -> None:
     win32api.CloseHandle(handle)
 
 
-def _resolve_input(argv: list[str]) -> str | None:
-    """Find a label file from CLI args or the clipboard."""
-    if len(argv) > 1:
-        path = argv[1].strip().strip('"')
-        if os.path.isfile(path):
-            return path
+def _parse_args(argv: list[str]) -> tuple[str | None, str | None]:
+    """Split argv into (open_path, ingest_path).
+
+    ``--ingest <file>`` is how the "PrintPal" virtual printer (and any other
+    producer) hands a rendered job to the app: it is spooled and drained rather
+    than opened as a one-off file. A bare path argument is opened as before.
+    """
+    ingest_path = None
+    positional = []
+    it = iter(argv[1:])
+    for arg in it:
+        if arg == "--ingest":
+            ingest_path = next(it, None)
+        elif arg.startswith("--ingest="):
+            ingest_path = arg.split("=", 1)[1]
+        else:
+            positional.append(arg)
+    open_path = None
+    if positional:
+        cand = positional[0].strip().strip('"')
+        if os.path.isfile(cand):
+            open_path = cand
+    if ingest_path:
+        ingest_path = ingest_path.strip().strip('"')
+    return open_path, ingest_path
+
+
+def _resolve_input(open_path: str | None) -> str | None:
+    """Fall back to a clipboard file when no path was given on the CLI."""
+    if open_path and os.path.isfile(open_path):
+        return open_path
     try:
         from printpal.clipboard import get_pdf_path
         return get_pdf_path()
@@ -88,12 +113,29 @@ def main() -> None:
     log = get_logger()
     log.info("PrintPal started")
 
-    input_path = _resolve_input(sys.argv)
+    open_path, ingest_path = _parse_args(sys.argv)
+
+    # A printed / watched job is spooled so the running instance (or this one, on
+    # startup) drains it through the same engine as a dropped file.
+    if ingest_path and os.path.isfile(ingest_path):
+        try:
+            from printpal import ingest
+            dest = ingest.submit(ingest_path, origin=ingest.ORIGIN_PRINTER, move=True)
+            log.info("Spooled ingest job %r -> %s", ingest_path, dest.name)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Failed to spool ingest job %r: %s", ingest_path, e)
+
+    input_path = None if ingest_path else _resolve_input(open_path)
 
     mutex = _acquire_mutex()
     if mutex is None:
-        log.info("Already running -- handing off %r and exiting.", input_path)
-        _hand_off(input_path)
+        # Another instance owns the UI. A spooled job it will poll for; a plain
+        # file open still goes through the handoff file.
+        if input_path:
+            log.info("Already running -- handing off %r and exiting.", input_path)
+            _hand_off(input_path)
+        else:
+            log.info("Already running -- job spooled, exiting.")
         return
 
     try:
@@ -124,12 +166,49 @@ def _run(log, input_path: str | None) -> None:
     except OSError:
         pass
 
+    # Clear last session's spooled jobs before we start watching for new ones.
+    try:
+        from printpal import ingest
+        stale = ingest.cleanup_stale()
+        if stale:
+            log.info("Cleared %d stale spool item(s)", stale)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Spool cleanup failed: %s", e)
+
     from printpal.ui import MainWindow
     window = MainWindow(config, initial_path=input_path)
     _install_handoff_watch(window)
+    _install_spool_watch(window, log)
     _install_autoprint(window, config, log)
     log.info("Main window opened (initial file: %s)", input_path)
     window.run()
+
+
+def _install_spool_watch(window, log) -> None:
+    """Drain the ingest spool into the window: printed / watched jobs appear
+    here the same as a dropped file. One job at a time so the preview keeps up;
+    the batch queue (a later feature) will drain many at once."""
+    def poll():
+        try:
+            if not getattr(window, "_busy", False):
+                from printpal import ingest
+                job = ingest.claim_one()
+                if job is not None:
+                    log.info("Ingesting spooled job %s (%s)", job.doc_path.name, job.origin)
+                    try:
+                        window.root.deiconify()
+                        window.root.lift()
+                        window.root.focus_force()
+                    except Exception:
+                        pass
+                    window.load_path(str(job.doc_path))
+        except Exception as e:  # noqa: BLE001
+            log.warning("Spool poll failed: %s", e)
+        try:
+            window.root.after(700, poll)
+        except Exception:
+            pass
+    window.root.after(700, poll)
 
 
 def _install_handoff_watch(window) -> None:

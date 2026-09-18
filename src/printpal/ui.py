@@ -871,7 +871,8 @@ def _validate_file(path: str) -> str | None:
     if not path or not os.path.isfile(path):
         return "That file could not be found."
     ext = os.path.splitext(path)[1].lower()
-    if ext not in (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"):
+    if ext not in (".pdf", ".xps", ".oxps", ".png", ".jpg", ".jpeg",
+                   ".tif", ".tiff", ".bmp", ".gif", ".webp"):
         return f"PrintPal works with PDF and image files, not {ext or 'this type'}."
     if ext == ".pdf":
         try:
