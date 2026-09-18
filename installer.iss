@@ -2,7 +2,7 @@
 ; Builds a proper Windows installer from the PyInstaller one-folder output.
 
 #define MyAppName "PrintPal"
-#define MyAppVersion "0.6.0"
+#define MyAppVersion "0.7.0"
 #define MyAppPublisher "Parsa J."
 #define MyAppURL "https://github.com/parsaj-dev/PrintPal"
 #define MyAppExeName "PrintPal.exe"

@@ -20,7 +20,9 @@
 ## Table of Contents
 
 - [What it does](#what-it-does)
+- [Features](#features)
 - [Download](#download)
+- [Print to PrintPal from any app](#print-to-printpal-from-any-app)
 - [How the detection works](#how-the-detection-works)
 - [Input handling](#input-handling)
 - [Configuration](#configuration)
@@ -39,6 +41,16 @@ The window shows the detected label at print quality with a confidence read-out.
 Prefer no clicks? Turn on **auto-print** in Settings and a single, high-confidence label prints the moment it loads.
 
 Designed for thermal label printers like the DYMO LabelWriter 450, Rollo, and Zebra. Works with FedEx, UPS, Purolator, Amazon, and any label PDF or image with barcodes -- whether it arrives as a bare 4x6 or buried on a Letter/A4 sheet.
+
+## Features
+
+- **Print to PrintPal from any app** -- an optional virtual printer (File > Print > PrintPal) sends any app's pages straight into the crop-and-print engine. No downloading, no file hunting. License-clean (XPS -> MuPDF, no Ghostscript). See [below](#print-to-printpal-from-any-app).
+- **Modern UI** -- a clean PySide6 interface with light/dark themes and the orange/brown brand. Native and fast even on a slow Windows 10 PC (no browser runtime).
+- **Batch queue** -- drop a folder, several files, or one PDF full of labels and print them all with one click, with a per-label status list (queued / printing / done / failed) and one-click retry.
+- **History + reprint** -- every print is logged (thumbnail, date, carrier, tracking number decoded from the barcode) in a local database. One-click reprint from history, or **Ctrl+R** to reprint the last label.
+- **N-up splitting** -- a page holding 2 or 4 labels (Amazon/Etsy style) is detected and split into individual 4x6 prints automatically.
+- **Smart routing (opt-in)** -- when you enable it for a job, 4x6 labels go to the thermal printer and packing slips / A4 sheets to the paper printer, per page. Off by default; never automatic.
+- **Auto-print** -- optionally print a single high-confidence label the moment it loads.
 
 ## Download
 
@@ -66,7 +78,9 @@ Then, for both strategies:
 
 Detection runs on a low-DPI render for speed; the label you print is then re-rendered from the PDF at full print resolution -- only the label's region, so a big sheet never gets rasterized at high DPI just to keep a 4x6 corner.
 
-If no barcode is found, PrintPal keeps the whole page (or the largest content block) and flags it as low confidence rather than guessing at a tight crop.
+If no barcode is found, PrintPal keeps the whole page (or the largest content block) and flags it as low confidence rather than guessing at a tight crop. A document-media page with no barcode is classified as a **packing slip / document** rather than a shipping label.
+
+**N-up pages** (2 or 4 labels in a grid, Amazon/Etsy style) are detected by clustering the barcodes and cutting the page at the whitespace gutters *between* the labels, so each one is cropped and printed as an individual 4x6. This can be turned off (`split_nup`) to keep the whole page as one.
 
 ## Input handling
 
@@ -99,6 +113,8 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | Setting | Default | What it does |
 |---|---|---|
 | `printer` | `DYMO LabelWriter 450` | Name of the target printer |
+| `thermal_printer` | `` | Printer for 4x6 labels when smart routing is enabled (falls back to `printer`) |
+| `paper_printer` | `` | Printer for packing slips / A4 when smart routing is enabled |
 | `media_size` | `4x6` | Label media size |
 | `detect_dpi` | `200` | Detection render DPI (lower = faster, but barcodes may not decode below ~180) |
 | `print_dpi` | `300` | Print render DPI |
@@ -106,19 +122,23 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | `copies` | `1` | Copies per print |
 | `auto_print` | `false` | Print a single high-confidence label automatically |
 | `auto_print_min_confidence` | `0.85` | Confidence needed for auto-print |
+| `split_nup` | `true` | Split multi-label (N-up) pages into individual labels |
+| `dark_mode` | `false` | Use the dark theme |
+
+Smart routing is only *applied* when you tick it for a job in the Queue -- setting `thermal_printer` / `paper_printer` never reroutes prints on its own.
 
 Older config files that used `dpi` are still read (it maps to `detect_dpi`).
 
 ## Building from source
 
-Requires Python 3.10+ on Windows. On Windows, pyzbar needs the zbar DLL -- the PyInstaller build bundles it automatically.
+Requires Python 3.10+ on Windows. On Windows, pyzbar needs the zbar DLL -- the PyInstaller build bundles it automatically. The UI is built on **PySide6/Qt** (LGPL); its DLLs are bundled by PyInstaller and unused Qt modules are trimmed by `printpal.spec`.
 
 ```bash
 pip install -e ".[dev]"
 pyinstaller printpal.spec
 ```
 
-The output is `dist/PrintPal.exe`.
+The output is `dist/PrintPal/` (containing `PrintPal.exe` and the virtual-printer helper `PrintPalPort.exe`).
 
 Releases are built automatically by GitHub Actions on a Windows runner when a version tag is pushed.
 
@@ -133,33 +153,35 @@ Unit tests run without any fixtures -- the barcode-dependent ones inject fake ba
 
 ## Project structure
 
+The core engine (`detect`, `rasterize`, `pipeline`, `printing`-prep, `ingest`,
+`batch`, `history`, `routing`, `carrier`) is UI-free and cross-platform, so it is
+fully unit-tested headless. The desktop UI (`qtui`) and the Windows virtual
+printer (`winprinter`) sit on top of it.
+
 ```
 src/printpal/
-    main.py          entry point, input resolution, single-instance handoff, auto-print
-    detect.py        physical-size-aware label detection, cropping, rotation, recheck
-    pipeline.py      turns a file into ready-to-print labels (multi-page, lazy hi-res render)
-    rasterize.py     PDF/image to PIL Image via PyMuPDF (page + region rendering)
-    clipboard.py     Windows clipboard (CF_HDROP, text path, file:/// URL)
+    main.py          entry point: arg/clipboard input, single-instance, spool drain
+    detect.py        label detection + N-up splitting, cropping, rotation, recheck
+    pipeline.py      turns a file into ready-to-print labels (multi-page, N-up, lazy render)
+    rasterize.py     PDF/XPS/image to PIL Image via PyMuPDF (page + region rendering)
     printing.py      Windows GDI print spooler, Lanczos-to-device scaling
     ingest.py        job spool: one hand-off point for the virtual printer,
                      a second launch, a future Downloads-watcher, batch queue
+    batch.py         per-label print queue (status, retry, history logging)
+    history.py       SQLite print history + thumbnails + reprint (AppData)
+    carrier.py       carrier + tracking-number recognition from barcodes
+    routing.py       opt-in smart routing (labels -> thermal, documents -> paper)
+    clipboard.py     Windows clipboard (CF_HDROP, text path, file:/// URL)
     config.py        tolerant TOML config in AppData
     log.py           rotating file logger
-    theme.py         ttk design system (palette, fonts, styles)
-    ui.py            main window, preview, thumbnail rail, settings
+    qtui/            the PySide6 desktop UI
+        app.py, window.py, widgets.py, workers.py, settings.py, theme.py
 winprinter/          optional Windows virtual printer (XPS -> ingest -> engine)
     jobio.py, printpal_catcher.py, printpal_watcher.py, printpal_port.py
     install_printer.ps1, uninstall_printer.ps1, README.md
 tools/               dev utilities (not shipped in the app)
     generate_fixtures.py   synthetic labels with real barcodes for tests
     xps.py                 pack PIL pages into an XPS (simulates the driver)
-tests/
-    test_detect.py     detection unit + integration tests
-    test_pipeline.py   orchestration, manual rotation, print render
-    test_printing.py   image prep + DIB packing
-    test_ingest.py     job spool submit/claim/complete
-    test_xps.py        XPS ingest end-to-end (virtual-printer path)
-    test_winprinter.py catcher/watcher format sniffing + staging
-    test_config.py     config round-trip + tolerance
-    test_rasterize.py  loader helpers + image DPI
+tests/                 detect, pipeline, ingest, xps, winprinter, batch,
+                       history, carrier, routing, config, rasterize, printing
 ```
