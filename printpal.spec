@@ -69,7 +69,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # keep Qt6 DLLs uncompressed -> reliable load
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -106,7 +106,7 @@ port_exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # keep Qt6 DLLs uncompressed -> reliable load
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
@@ -128,7 +128,7 @@ coll = COLLECT(
     port.zipfiles,
     port.datas,
     strip=False,
-    upx=True,
+    upx=False,  # keep Qt6 DLLs uncompressed -> reliable load
     upx_exclude=[],
     name="PrintPal",
 )
