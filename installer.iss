@@ -2,7 +2,7 @@
 ; Builds a proper Windows installer from the PyInstaller one-folder output.
 
 #define MyAppName "PrintPal"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.7.0"
 #define MyAppPublisher "Parsa J."
 #define MyAppURL "https://github.com/parsaj-dev/PrintPal"
 #define MyAppExeName "PrintPal.exe"
@@ -33,6 +33,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 Name: "taskbarpin"; Description: "Pin to taskbar (you can also do this manually)"; GroupDescription: "Shortcuts:"
+Name: "virtualprinter"; Description: "Install the ""PrintPal"" virtual printer (print to PrintPal from any app)"; GroupDescription: "Virtual printer:"; Flags: unchecked
 
 [Files]
 Source: "dist\PrintPal\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -45,4 +46,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{userstartmenu}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Run]
+; Optional: install the virtual printer. The .ps1 self-elevates (needs admin).
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\install_printer.ps1"" -PrintPalExe ""{app}\{#MyAppExeName}"""; Description: "Install the PrintPal virtual printer"; Flags: postinstall skipifsilent runascurrentuser; Tasks: virtualprinter
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch PrintPal"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Remove the virtual printer on uninstall (ignore errors if it was never installed).
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\uninstall_printer.ps1"""; Flags: runhidden; RunOnceId: "RemovePrintPalPrinter"
