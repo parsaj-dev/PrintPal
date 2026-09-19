@@ -23,13 +23,10 @@ try:
 except ImportError:
     pass
 
-# The virtual-printer install scripts ship alongside the exe so the user can run
-# them from the install folder (see winprinter/README.md).
-_winprinter_datas = [
-    ("winprinter/install_printer.ps1", "."),
-    ("winprinter/uninstall_printer.ps1", "."),
-    ("winprinter/README.md", "winprinter"),
-]
+# NOTE: the virtual-printer .ps1 scripts are NOT bundled here. PyInstaller 6
+# one-folder mode puts datas under dist/PrintPal/_internal/, but those scripts
+# must sit at the top level next to PrintPal.exe (the installer runs
+# {app}\install_printer.ps1). CI copies them into dist/PrintPal/ after the build.
 
 # Trim Qt modules PrintPal never uses -- keeps the PySide6 bundle small.
 _qt_excludes = [
@@ -46,7 +43,7 @@ a = Analysis(
     ["src/printpal/main.py"],
     pathex=["src"],
     binaries=zbar_dll,
-    datas=[("assets/icon.png", "assets")] + _winprinter_datas,
+    datas=[("assets/icon.png", "assets")],
     hiddenimports=["printpal", "printpal.qtui.app", "printpal.qtui.window"],
     hookspath=[],
     hooksconfig={},

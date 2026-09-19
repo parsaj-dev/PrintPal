@@ -44,6 +44,14 @@ jobs:
       - name: Build with PyInstaller (one-folder)
         run: pyinstaller printpal.spec
 
+      - name: Bundle virtual-printer scripts (top level, next to the exe)
+        run: |
+          Copy-Item "winprinter\install_printer.ps1"   "dist\PrintPal\"
+          Copy-Item "winprinter\uninstall_printer.ps1" "dist\PrintPal\"
+          New-Item -ItemType Directory -Force "dist\PrintPal\winprinter" | Out-Null
+          Copy-Item "winprinter\README.md" "dist\PrintPal\winprinter\"
+        shell: pwsh
+
       - name: Verify build
         run: |
           if (!(Test-Path "dist/PrintPal/PrintPal.exe")) { throw "PrintPal.exe not found" }
