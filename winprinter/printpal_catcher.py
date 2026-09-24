@@ -48,7 +48,8 @@ def _log(staging: Path) -> logging.Logger:
             h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             log.addHandler(h)
         except OSError:
-            log.addHandler(logging.StreamHandler(sys.stderr))
+            log.addHandler(logging.StreamHandler(sys.stderr) if sys.stderr
+                           else logging.NullHandler())
     return log
 
 

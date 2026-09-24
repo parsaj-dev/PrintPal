@@ -77,7 +77,7 @@ Paths used:
 
 - Spool incoming: `%APPDATA%\PrintPal\spool\incoming\`
 - Catcher/watcher log: `…\incoming\catcher.log`, `…\incoming\watcher.log`
-- Logon watcher task (FilePort): `PrintPalPortWatcher`
+- Logon watcher task (FilePort): `PrintPalPortWatcher` — runs `PrintPalWatcher.exe` hidden (no window), restarts if it dies, no time limit. Opening PrintPal also restarts it.
 
 ---
 
@@ -88,7 +88,7 @@ Paths used:
 | `jobio.py` | Format sniffing (PDF/XPS/PS) + staging. Pure, unit-tested. |
 | `printpal_catcher.py` | `catch`: read a job (stdin/file) → stage → `--ingest`. |
 | `printpal_watcher.py` | `watch`: watch the incoming folder → hand off finished jobs. |
-| `printpal_port.py` | One entry point → `PrintPalPort.exe {catch\|watch}`. |
+| `printpal_port.py` | One entry point → `PrintPalPort.exe {catch\|watch}` (console) and `PrintPalWatcher.exe` (same code, no window — what the logon task runs). |
 | `install_printer.ps1` / `uninstall_printer.ps1` | Install / remove the printer. |
 
 The OS-independent logic (sniffing, staging, catcher routing) is covered by

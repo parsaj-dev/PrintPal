@@ -56,6 +56,7 @@ jobs:
         run: |
           if (!(Test-Path "dist/PrintPal/PrintPal.exe")) { throw "PrintPal.exe not found" }
           if (!(Test-Path "dist/PrintPal/PrintPalPort.exe")) { throw "PrintPalPort.exe not found" }
+          if (!(Test-Path "dist/PrintPal/PrintPalWatcher.exe")) { throw "PrintPalWatcher.exe not found" }
           if (!(Test-Path "dist/PrintPal/install_printer.ps1")) { throw "install_printer.ps1 not bundled" }
           $mb = [math]::Round((Get-Item "dist/PrintPal/PrintPal.exe").Length / 1MB, 1)
           Write-Host "PrintPal.exe: $mb MB"

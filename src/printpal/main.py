@@ -99,6 +99,21 @@ def _resolve_printer(config: Config, log) -> None:
         log.warning("Printer resolution failed: %s", e)
 
 
+def _ensure_printer_watcher(log) -> None:
+    """If the virtual printer is installed, make sure its hidden watcher task is
+    running (e.g. after it was stopped). A no-op when it's already running (the
+    task allows only one instance) or when the printer was never installed."""
+    if sys.platform != "win32":
+        return
+    import subprocess
+    try:
+        subprocess.run(["schtasks", "/Run", "/TN", "PrintPalPortWatcher"],
+                       capture_output=True, timeout=10,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:  # noqa: BLE001
+        log.debug("Watcher task not started: %s", e)
+
+
 def main() -> None:
     log = get_logger()
     log.info("PrintPal started")
@@ -160,6 +175,8 @@ def _run(log, input_path: str | None) -> None:
             log.info("Cleared %d stale spool item(s)", stale)
     except Exception as e:  # noqa: BLE001
         log.warning("Spool cleanup failed: %s", e)
+
+    _ensure_printer_watcher(log)
 
     log.info("Main window opening (initial file: %s)", input_path)
     from printpal.qtui.app import run_app

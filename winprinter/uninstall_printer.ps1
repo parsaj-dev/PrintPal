@@ -55,6 +55,9 @@ foreach ($m in $monitors) {
 $task = Get-ScheduledTask -TaskName "PrintPalPortWatcher" -ErrorAction SilentlyContinue
 if ($task) {
     Write-Host "Removing logon watcher task..."
+    Stop-ScheduledTask -TaskName "PrintPalPortWatcher" -ErrorAction SilentlyContinue
+    Get-Process -Name "PrintPalWatcher", "PrintPalPort" -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName "PrintPalPortWatcher" -Confirm:$false -ErrorAction SilentlyContinue
 }
 

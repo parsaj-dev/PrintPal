@@ -112,19 +112,31 @@ if ($Method -eq "FilePort") {
         Add-Printer -Name $PrinterName -DriverName $DriverName -PortName $portFile
     }
 
-    # Register the watcher to run at logon so prints are caught even when the
-    # PrintPal window is closed.
-    if (Test-Path $port) {
+    # Register the watcher to run hidden at logon so prints are caught even when
+    # the PrintPal window is closed. PrintPalWatcher.exe is the window-less build
+    # (nothing to close by accident); fall back to the console one if missing.
+    $watcher = Join-Path $exeDir "PrintPalWatcher.exe"
+    if (-not (Test-Path $watcher)) { $watcher = $port }
+    if (Test-Path $watcher) {
         $taskName = "PrintPalPortWatcher"
-        $action   = New-ScheduledTaskAction -Execute $port `
+        # Replace a running older watcher so the new exe takes over.
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Get-Process -Name "PrintPalWatcher", "PrintPalPort" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        $action   = New-ScheduledTaskAction -Execute $watcher `
                         -Argument "watch --incoming `"$incoming`" --printpal `"$exe`""
-        $trigger  = New-ScheduledTaskTrigger -AtLogOn
+        $trigger  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+        # No 72-hour time limit (the Windows default would kill it after 3 days),
+        # restart if it ever dies, and never run two copies.
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
-                        -DontStopIfGoingOnBatteries -StartWhenAvailable
+                        -DontStopIfGoingOnBatteries -StartWhenAvailable `
+                        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+                        -MultipleInstances IgnoreNew
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
             -Settings $settings -Force -RunLevel Limited | Out-Null
         Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        Write-Host "Registered logon watcher task '$taskName'."
+        Write-Host "Registered hidden logon watcher task '$taskName'."
     }
 
     Write-Host ""

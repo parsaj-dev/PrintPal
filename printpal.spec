@@ -115,12 +115,36 @@ port_exe = EXE(
     icon="assets/icon.ico",
 )
 
+# PrintPalWatcher.exe -- the same code with NO console window. The logon task
+# runs this one, so there's no black window to close by accident.
+watcher_exe = EXE(
+    port_pyz,
+    port.scripts,
+    [],
+    exclude_binaries=True,
+    name="PrintPalWatcher",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon="assets/icon.ico",
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
     port_exe,
+    watcher_exe,
     port.binaries,
     port.zipfiles,
     port.datas,

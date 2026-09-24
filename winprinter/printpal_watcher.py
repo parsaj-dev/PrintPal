@@ -43,7 +43,8 @@ def _logger(incoming: Path) -> logging.Logger:
             incoming.mkdir(parents=True, exist_ok=True)
             h = logging.FileHandler(incoming / "watcher.log", encoding="utf-8")
         except OSError:
-            h = logging.StreamHandler(sys.stderr)
+            # A window-less build has no stderr; never crash on logging.
+            h = logging.StreamHandler(sys.stderr) if sys.stderr else logging.NullHandler()
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log.addHandler(h)
     return log
