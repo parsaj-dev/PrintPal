@@ -46,7 +46,7 @@ class _FakePrinter:
 
 
 def _inject(monkeypatch, data=b"1Z999AA10123456784"):
-    monkeypatch.setattr(detect, "zbar_decode", lambda img: [_FakeBarcode(data)])
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: [_FakeBarcode(data)])
 
 
 def test_add_expands_to_label_items(tmp_path, monkeypatch):

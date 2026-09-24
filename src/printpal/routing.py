@@ -12,7 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from printpal.config import Config
-from printpal.detect import KIND_DOCUMENT, KIND_LABEL
+# Same values as printpal.detect.KIND_*; kept literal so the UI can import
+# routing without pulling in OpenCV/NumPy at startup.
+KIND_LABEL = "label"
+KIND_DOCUMENT = "document"
 
 
 @dataclass

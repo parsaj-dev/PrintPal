@@ -18,7 +18,7 @@ from PIL import Image
 from printpal.config import Config
 from printpal.detect import KIND_BLANK, LabelResult, find_labels, _rotate_upright
 from printpal.rasterize import (
-    image_dpi, is_document, load_image, page_count, rasterize_pdf_region,
+    image_dpi, is_document, iter_pages, rasterize_pdf_region,
 )
 
 # Guard against someone copying a giant multi-hundred-page PDF by mistake.
@@ -115,15 +115,12 @@ def process_file(path: str, config: Config,
     Returns one ProcessedLabel per page that carries content. If every page is
     blank, the blank pages are returned so the caller can explain why.
     """
-    total = page_count(path)
-    capped = min(total, MAX_PAGES)
+    total = 1
+    capped = 1
     labels: list[ProcessedLabel] = []
 
-    for i in range(capped):
-        if progress:
-            progress(f"Reading page {i + 1} of {capped}…" if capped > 1
-                     else "Reading label…", i, capped)
-        img = load_image(path, dpi=config.detect_dpi, page=i)
+    for i, total, img in iter_pages(path, dpi=config.detect_dpi, limit=MAX_PAGES):
+        capped = min(total, MAX_PAGES)
         if progress:
             progress(f"Finding label{'' if capped == 1 else f' on page {i + 1}'}…",
                      i, capped)

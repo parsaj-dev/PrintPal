@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import datetime as _dt
+import threading
+from typing import TYPE_CHECKING
 import os
 import sys
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
@@ -19,12 +21,14 @@ from printpal.batch import DONE, FAILED, PRINTING, PrintQueue, QUEUED, QueueItem
 from printpal.carrier import parse_tracking
 from printpal.config import Config
 from printpal.history import History, HistoryEntry
-from printpal.pipeline import ProcessedLabel
 from printpal.printing import list_printers, print_label
 from printpal.qtui import theme
 from printpal.qtui.settings import SettingsDialog
 from printpal.qtui.widgets import PreviewCanvas, ThumbTile, make_chip, pil_to_qpixmap, row
 from printpal.qtui.workers import BatchWorker, DetectWorker, EnqueueWorker
+
+if TYPE_CHECKING:
+    from printpal.pipeline import ProcessedLabel
 
 NAV_LABEL, NAV_QUEUE, NAV_HISTORY = 0, 1, 2
 
@@ -47,6 +51,8 @@ def _asset_path(name: str) -> str | None:
 
 
 class MainWindow(QWidget):
+    _printers_loaded = Signal(list)   # delivered from the background lister
+
     def __init__(self, config: Config, initial_path: str | None = None, log=None):
         super().__init__()
         self.config = config
@@ -84,6 +90,9 @@ class MainWindow(QWidget):
         self._refresh_history()
         self._update_nav_counts()
         self._start_watchers()
+        # The window is up; load the detection engine (OpenCV, NumPy, MuPDF,
+        # zbar) in the background so the first label doesn't pay for it.
+        threading.Thread(target=_warm_engine, daemon=True).start()
 
         if initial_path:
             QTimer.singleShot(60, lambda: self.load_path(initial_path))
@@ -337,10 +346,24 @@ class MainWindow(QWidget):
 
     # -------------------------------------------------------------- printers
     def _reload_printers(self) -> None:
-        try:
-            printers = list_printers()
-        except Exception:
-            printers = []
+        """Show the saved printer immediately, then fill in the full list from a
+        background thread -- enumerating printers can take seconds on an office
+        PC with mapped network printers, and must not hold up the window."""
+        self._fill_printers([])
+        if not getattr(self, "_printers_hooked", False):
+            self._printers_loaded.connect(self._fill_printers)
+            self._printers_hooked = True
+
+        def work():
+            try:
+                found = list_printers()
+            except Exception:
+                found = []
+            self._printers_loaded.emit(found)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fill_printers(self, printers: list) -> None:
+        printers = list(printers)
         if self.config.printer and self.config.printer not in printers:
             printers = [self.config.printer] + printers
         self.printer_combo.blockSignals(True)
@@ -775,6 +798,13 @@ class MainWindow(QWidget):
             self.load_path(files[0])
         else:
             self.enqueue(files)
+
+
+def _warm_engine() -> None:
+    try:
+        import printpal.pipeline  # noqa: F401  (pulls in cv2/numpy/pymupdf/pyzbar)
+    except Exception:
+        pass  # a real error will surface properly on the first detection
 
 
 def _validate(path: str) -> str | None:

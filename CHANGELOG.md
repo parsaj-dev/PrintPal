@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.1
+
+### Fixed
+- **Virtual printer stopped when its console window was closed.** The logon
+  watcher now runs as a window-less `PrintPalWatcher.exe`, restarts itself if it
+  dies, has no time limit (the Windows default would have stopped it after 3
+  days), and opening PrintPal restarts it if needed.
+
+### Faster (same output)
+Detection results are byte-for-byte identical to 0.7.0 on the test labels;
+it just does less work:
+- Barcodes are scanned once per page instead of up to three times, and N-up
+  cells reuse the page scan.
+- zbar tries the shipping symbologies first (much faster), falling back to a
+  full scan only when nothing is found, so no barcode type is missed.
+- Blank pages skip the barcode scan; redundant post-crop re-scans are replaced
+  by an exact geometric check.
+- Greyscale is computed once per page; multi-page PDFs are opened once.
+- The window opens before the detection engine loads, and the engine warms up
+  in the background.
+- No more printer enumeration at startup or before every print (can take
+  seconds on office PCs with network printers); the printer list loads in the
+  background.
+- Print data is packed for the spooler in C instead of a Python loop.
+
 ## 0.7.0
 
 A big release: a virtual printer, batch printing, history + reprint, N-up

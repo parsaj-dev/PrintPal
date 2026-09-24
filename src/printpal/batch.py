@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from PIL import Image
 
@@ -21,7 +21,8 @@ from printpal import routing
 from printpal.carrier import parse_tracking
 from printpal.config import Config
 from printpal.history import History, HistoryEntry
-from printpal.pipeline import ProcessedLabel, process_file
+if TYPE_CHECKING:
+    from printpal.pipeline import ProcessedLabel
 
 # Item statuses.
 QUEUED = "queued"
@@ -78,6 +79,7 @@ class PrintQueue:
         FAILED item so the user sees why nothing came out.
         """
         title = title or os.path.basename(source) or source
+        from printpal.pipeline import process_file  # heavy; loaded on first use
         try:
             labels = process_file(source, self.config)
         except Exception as e:  # noqa: BLE001 - surface any read/detect failure

@@ -101,11 +101,41 @@ def _union(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
-def _decode(img: Image.Image, gray: np.ndarray | None = None):
-    """Decode 1D + 2D barcodes. Feed zbar a greyscale image -- it is what zbar
-    works on internally, and it is measurably faster than handing it RGB."""
-    src = Image.fromarray(gray) if gray is not None else img
+def _ship_symbols():
+    """The symbologies shipping labels actually use. Restricting zbar to these is
+    several times faster than letting it try every retail code (EAN/UPC/ISBN)."""
+    try:
+        from pyzbar.pyzbar import ZBarSymbol
+    except Exception:
+        return None
+    names = ("CODE128", "CODE39", "CODE93", "I25", "QRCODE", "DATABAR", "DATABAR_EXP")
+    return [getattr(ZBarSymbol, n) for n in names if hasattr(ZBarSymbol, n)] or None
+
+
+_SHIP_SYMBOLS = _ship_symbols()
+
+
+def _zbar(gray: np.ndarray, fallback: bool = True):
+    """Decode a greyscale array. Tries shipping symbologies first; if nothing is
+    found and `fallback` is set, rescans for every symbology so an unusual code
+    is never missed (the slow path only runs when the fast one finds nothing)."""
+    src = Image.fromarray(np.ascontiguousarray(gray))
+    if _SHIP_SYMBOLS:
+        found = zbar_decode(src, symbols=_SHIP_SYMBOLS)
+        if found or not fallback:
+            return found
     return zbar_decode(src)
+
+
+def _to_gray(img: Image.Image) -> np.ndarray:
+    # PIL's L conversion uses the same ITU-R 601 weights as cv2's RGB2GRAY, and
+    # converting straight to one channel avoids a full-colour array copy.
+    return np.asarray(img if img.mode == "L" else img.convert("L"))
+
+
+def _decode(img: Image.Image, gray: np.ndarray | None = None):
+    """Decode 1D + 2D barcodes on greyscale (what zbar works on internally)."""
+    return _zbar(gray if gray is not None else _to_gray(img))
 
 
 def _barcode_rects(barcodes) -> list[tuple[int, int, int, int]]:
@@ -261,28 +291,41 @@ def _label_block(ink: np.ndarray, barcode_rects, dpi: int
 # -- public API ---------------------------------------------------------------
 
 def find_label(img: Image.Image, dpi: int = 200,
-               margin_inches: float = 0.08) -> LabelResult:
+               margin_inches: float = 0.08, *,
+               _gray: np.ndarray | None = None, _barcodes=None) -> LabelResult:
     """Detect and crop the shipping label on a rasterized page.
 
     `img` is one page rendered at `dpi`. Returns a LabelResult whose `image` is
     the upright, cropped label (at detect DPI, for preview) and whose `box`
     /`orientation` can be replayed against a higher-DPI render for printing.
+
+    `_gray` / `_barcodes` let `find_labels` hand over work it has already done
+    (the greyscale plane and the decoded barcodes) so nothing is computed twice.
     """
-    rgb = np.asarray(img.convert("RGB"))
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gray = _gray if _gray is not None else _to_gray(img)
     ink = _ink_mask(gray)
     H, W = ink.shape
     page_area = W * H
 
+    # A blank page needs no barcode scan at all.
+    if _content_bbox(ink) is None:
+        return LabelResult(
+            image=img, confidence=0.0, method="no-content",
+            barcodes_in=0, barcodes_out=0, box=(0, 0, W, H),
+            detect_dpi=dpi, kind=KIND_BLANK,
+            warnings=["This page looks blank -- no content to print."],
+        )
+
     short_in = min(W, H) / dpi
     is_label_media = short_in <= LABEL_MEDIA_MAX_SHORT_IN
 
-    barcodes = _decode(img, gray)
+    barcodes = _barcodes if _barcodes is not None else _zbar(gray)
+    from_upscale = False
     if not barcodes and not is_label_media:
         # Dense codes on a big sheet sometimes need more resolution. One retry at
         # 1.5x by upscaling the grey plane is cheap next to re-rasterizing.
         big = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-        retry = zbar_decode(Image.fromarray(big))
+        retry = _zbar(big, fallback=False)
         if retry:
             class _Scaled:  # shim so downstream sees source-resolution rects
                 def __init__(s, d):
@@ -293,17 +336,10 @@ def find_label(img: Image.Image, dpi: int = 200,
                     s.type = d.type
                     s.data = getattr(d, "data", b"")
             barcodes = [_Scaled(d) for d in retry]
+            from_upscale = True
 
     warnings: list[str] = []
     brects = _barcode_rects(barcodes)
-
-    if _content_bbox(ink) is None:
-        return LabelResult(
-            image=img, confidence=0.0, method="no-content",
-            barcodes_in=0, barcodes_out=0, box=(0, 0, W, H),
-            detect_dpi=dpi, kind=KIND_BLANK,
-            warnings=["This page looks blank -- no content to print."],
-        )
 
     if is_label_media:
         kind = KIND_LABEL
@@ -351,9 +387,23 @@ def find_label(img: Image.Image, dpi: int = 200,
     crop = img.crop(box)
     upright = _rotate_upright(crop, orientation)
 
-    # Quality gate: do the barcodes still decode after cropping + rotating?
-    recheck = _decode(upright)
-    barcodes_out = len(recheck)
+    # Quality gate: do the barcodes still decode after cropping? Skipped when it
+    # can't change the answer: with no barcodes there is nothing to verify, and a
+    # label-media crop is the content bbox plus margin, so it contains every mark
+    # the barcodes were read from. Otherwise re-scan the greyscale crop directly --
+    # zbar reads bars in any orientation, so rotating first is wasted work.
+    if not barcodes:
+        barcodes_out = 0
+    elif is_label_media:
+        barcodes_out = len(barcodes)
+    elif from_upscale:
+        # Only readable at 1.5x: a genuine re-scan is the honest check here.
+        barcodes_out = len(_zbar(gray[y0:y1, x0:x1]))
+    else:
+        # The crop can only lose a barcode by clipping it, so count the ones that
+        # sit fully inside it -- the same answer as a re-scan, without the scan.
+        barcodes_out = sum(1 for r in brects
+                           if r[0] >= x0 and r[1] >= y0 and r[2] <= x1 and r[3] <= y1)
     if barcodes:
         if barcodes_out == 0:
             confidence = max(0.1, confidence - 0.45)
@@ -443,32 +493,40 @@ def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
     whose barcodes don't form a clean grid) return a single result identical to
     `find_label`.
     """
-    if not split_nup:
-        return [find_label(img, dpi, margin_inches)]
-
-    rgb = np.asarray(img.convert("RGB"))
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    # One greyscale conversion and one barcode scan per page; everything below
+    # reuses them instead of recomputing.
+    gray = _to_gray(img)
     ink = _ink_mask(gray)
     H, W = ink.shape
+    if _content_bbox(ink) is None:
+        return [find_label(img, dpi, margin_inches, _gray=gray, _barcodes=[])]
 
-    barcodes = _decode(img, gray)
-    if len(barcodes) < 2:
-        return [find_label(img, dpi, margin_inches)]
+    barcodes = _zbar(gray)
+
+    def single() -> list[LabelResult]:
+        return [find_label(img, dpi, margin_inches, _gray=gray, _barcodes=barcodes)]
+
+    if not split_nup or len(barcodes) < 2:
+        return single()
 
     centers = [_barcode_center(b) for b in barcodes]
     xb = _axis_bounds([c[0] for c in centers], ink.sum(axis=0), dpi, W)
     yb = _axis_bounds([c[1] for c in centers], ink.sum(axis=1), dpi, H)
     if len(xb) <= 2 and len(yb) <= 2:
-        return [find_label(img, dpi, margin_inches)]  # no between-label gutter -> single
+        return single()  # no between-label gutter -> one label
 
     results: list[LabelResult] = []
     for j in range(len(yb) - 1):
         for i in range(len(xb) - 1):
             cx0, cy0, cx1, cy1 = xb[i], yb[j], xb[i + 1], yb[j + 1]
-            if not any(cx0 <= cx < cx1 and cy0 <= cy < cy1 for cx, cy in centers):
+            inside = [b for b, (cx, cy) in zip(barcodes, centers)
+                      if cx0 <= cx < cx1 and cy0 <= cy < cy1]
+            if not inside:
                 continue  # a cell with no barcode is not a label
             cell = img.crop((cx0, cy0, cx1, cy1))
-            r = find_label(cell, dpi, margin_inches)
+            r = find_label(cell, dpi, margin_inches,
+                           _gray=gray[cy0:cy1, cx0:cx1],
+                           _barcodes=[_Shifted(b, cx0, cy0) for b in inside])
             if r.kind == KIND_BLANK:
                 continue
             bx0, by0, bx1, by1 = r.box
@@ -477,7 +535,26 @@ def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
 
     if sum(1 for r in results if r.is_label) >= 2:
         return results
-    return [find_label(img, dpi, margin_inches)]
+    return single()
+
+
+class _Rect:
+    __slots__ = ("left", "top", "width", "height")
+
+    def __init__(self, left, top, width, height):
+        self.left, self.top, self.width, self.height = left, top, width, height
+
+
+class _Shifted:
+    """A page barcode re-expressed in an N-up cell's coordinates, so each cell
+    reuses the page scan instead of decoding again."""
+
+    def __init__(self, b, dx: int, dy: int):
+        r = b.rect
+        self.rect = _Rect(r.left - dx, r.top - dy, r.width, r.height)
+        self.orientation = getattr(b, "orientation", "UP")
+        self.type = getattr(b, "type", "")
+        self.data = getattr(b, "data", b"")
 
 
 def scale_box(box: tuple[int, int, int, int], from_dpi: int, to_dpi: int,

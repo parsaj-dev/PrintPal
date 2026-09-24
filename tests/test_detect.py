@@ -48,7 +48,7 @@ class _FakeBarcode:
 
 def inject_barcodes(monkeypatch, barcodes):
     """Make detect's zbar decode return `barcodes` regardless of the image."""
-    monkeypatch.setattr(detect, "zbar_decode", lambda img: list(barcodes))
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: list(barcodes))
 
 
 def blank(w, h):

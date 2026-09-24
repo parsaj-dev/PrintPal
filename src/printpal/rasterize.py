@@ -115,6 +115,22 @@ def rasterize_pdf_region(path: str, clip_box: tuple[int, int, int, int],
         doc.close()
 
 
+def iter_pages(path: str, dpi: int = 200, limit: int | None = None):
+    """Yield (page_index, page_count, image) for every page, opening and parsing
+    the document ONCE instead of once per page (a real cost on multi-page PDFs
+    and slow disks). Image files yield a single page."""
+    if not is_document(path):
+        yield 0, 1, Image.open(path).convert("RGB")
+        return
+    doc = pymupdf.open(path)
+    try:
+        total = len(doc)
+        for i in range(min(total, limit) if limit else total):
+            yield i, total, _pixmap_to_image(doc[i].get_pixmap(dpi=dpi))
+    finally:
+        doc.close()
+
+
 def load_image(path: str, dpi: int = 200, page: int = 0) -> Image.Image:
     """Load a document page (PDF/XPS/OXPS) or an image file as an RGB PIL Image."""
     if is_document(path):

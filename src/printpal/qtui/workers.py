@@ -9,7 +9,6 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from printpal.batch import PrintQueue
 from printpal.config import Config
-from printpal.pipeline import process_file
 
 
 class DetectSignals(QObject):
@@ -29,6 +28,7 @@ class DetectWorker(QRunnable):
 
     @Slot()
     def run(self) -> None:
+        from printpal.pipeline import process_file  # heavy; loaded on first use
         try:
             labels = process_file(
                 self.path, self.config,

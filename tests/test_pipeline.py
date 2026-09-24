@@ -37,7 +37,7 @@ def _label_png(tmp_path, name="label.png", size=(800, 1200)):
 
 def test_process_image_file(tmp_path, monkeypatch):
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     path = _label_png(tmp_path)
     cfg = Config()
     labels = process_file(path, cfg)
@@ -50,7 +50,7 @@ def test_process_image_file(tmp_path, monkeypatch):
 
 def test_manual_rotation_changes_preview(tmp_path, monkeypatch):
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     path = _label_png(tmp_path)
     labels = process_file(path, Config())
     lab = labels[0]
@@ -65,7 +65,7 @@ def test_manual_rotation_changes_preview(tmp_path, monkeypatch):
 
 def test_render_print_image_for_image_source(tmp_path, monkeypatch):
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     path = _label_png(tmp_path)
     cfg = Config()
     lab = process_file(path, cfg)[0]
@@ -77,7 +77,7 @@ def test_render_print_image_for_image_source(tmp_path, monkeypatch):
 
 def test_render_print_image_applies_rotation(tmp_path, monkeypatch):
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     path = _label_png(tmp_path)
     cfg = Config()
     lab = process_file(path, cfg)[0]
@@ -90,7 +90,7 @@ def test_render_print_image_applies_rotation(tmp_path, monkeypatch):
 def test_image_dpi_metadata_drives_dimensions(tmp_path, monkeypatch):
     # A 1200x1800 image tagged 300 dpi is a 4x6 label, not a 6x9 sheet.
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     arr = np.full((1800, 1200, 3), 255, np.uint8)
     arr[60:1740, 60:1140] = 0
     p = tmp_path / "label300.png"
@@ -105,7 +105,7 @@ def test_image_dpi_metadata_drives_dimensions(tmp_path, monkeypatch):
 def test_image_without_dpi_uses_default(tmp_path, monkeypatch):
     from printpal.rasterize import DEFAULT_IMAGE_DPI
     monkeypatch.setattr(detect, "zbar_decode",
-                        lambda img: [_FakeBarcode(100, 500, 400, 80, "UP")])
+                        lambda img, **kw: [_FakeBarcode(100, 500, 400, 80, "UP")])
     path = _label_png(tmp_path)  # PNG saved without dpi metadata
     lab = process_file(path, Config())[0]
     assert lab.result.detect_dpi == DEFAULT_IMAGE_DPI
@@ -113,7 +113,7 @@ def test_image_without_dpi_uses_default(tmp_path, monkeypatch):
 
 def test_packing_slip_is_not_counted_as_label(tmp_path, monkeypatch):
     # A document-sized page with content but no barcode is a slip, not a label.
-    monkeypatch.setattr(detect, "zbar_decode", lambda img: [])
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: [])
     arr = np.full((2200, 1700, 3), 255, np.uint8)
     arr[200:1400, 250:1450] = 0
     p = tmp_path / "slip.png"

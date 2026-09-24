@@ -59,13 +59,11 @@ def _dib_bytes(image: Image.Image) -> tuple[bytes, bytes, int, int]:
     24-bit DIB with 4-byte aligned rows -- the shape StretchDIBits wants."""
     rgb = image.convert("RGB")
     iw, ih = rgb.size
-    raw = rgb.tobytes("raw", "BGR")
-
     row_bytes = iw * 3
-    pad = (4 - row_bytes % 4) % 4
-    if pad:
-        rows = [raw[r * row_bytes:(r + 1) * row_bytes] + b"\x00" * pad for r in range(ih)]
-        raw = b"".join(rows)
+    stride = row_bytes + (4 - row_bytes % 4) % 4
+    # Pillow's raw encoder writes each row at `stride` bytes -- the 4-byte
+    # alignment a DIB needs -- in C, instead of re-slicing rows in Python.
+    raw = rgb.tobytes("raw", "BGR", stride)
 
     header = struct.pack(
         "<IiiHHIIiiII",
@@ -104,7 +102,19 @@ if sys.platform == "win32":
         return names
 
     def printer_exists(name: str) -> bool:
-        return name in list_printers()
+        # Open the one printer by name instead of enumerating them all: on an
+        # office PC with mapped network printers EnumPrinters can take seconds.
+        if not name:
+            return False
+        try:
+            handle = win32print.OpenPrinter(name)
+        except Exception:
+            return False
+        try:
+            win32print.ClosePrinter(handle)
+        except Exception:
+            pass
+        return True
 
     def default_printer() -> str | None:
         try:
@@ -115,15 +125,17 @@ if sys.platform == "win32":
     def print_label(image: Image.Image, printer_name: str, copies: int = 1,
                     fit_rotate: bool = True) -> None:
         """Send an image to the named printer, scaled to fill the media."""
-        if not printer_exists(printer_name):
-            raise RuntimeError(
-                f'Printer "{printer_name}" not found. '
-                f'Available: {", ".join(list_printers()) or "none"}')
-
         copies = max(1, min(99, int(copies)))
 
         hdc = win32ui.CreateDC()
-        hdc.CreatePrinterDC(printer_name)
+        try:
+            # No up-front printer enumeration (slow with network printers):
+            # just try to open it, and only list printers if that fails.
+            hdc.CreatePrinterDC(printer_name)
+        except Exception:
+            raise RuntimeError(
+                f'Printer "{printer_name}" not found. '
+                f'Available: {", ".join(list_printers()) or "none"}') from None
         raw_hdc = hdc.GetSafeHdc()
         gdi32 = ctypes.windll.gdi32
         try:
