@@ -112,6 +112,21 @@ if ($Method -eq "FilePort") {
         Add-Printer -Name $PrinterName -DriverName $DriverName -PortName $portFile
     }
 
+    # The in-box XPS driver defaults to re-compressing every image as JPEG,
+    # which is slow on an old PC (a label page is mostly images) and softens
+    # barcodes. Default the printer to lossless PNG. Best effort: a driver that
+    # doesn't offer the option just keeps its default.
+    try {
+        $ticket = (Get-PrintConfiguration -PrinterName $PrinterName).PrintTicketXML
+        if ($ticket -match 'ns0000:JPEG\w+') {
+            $ticket = $ticket -replace 'ns0000:JPEG\w+', 'ns0000:PNG'
+            Set-PrintConfiguration -PrinterName $PrinterName -PrintTicketXml $ticket
+            Write-Host "Set image format to PNG (faster, sharper barcodes)."
+        }
+    } catch {
+        Write-Warning "Could not set the image format to PNG: $_"
+    }
+
     # Register the watcher to run hidden at logon so prints are caught even when
     # the PrintPal window is closed. PrintPalWatcher.exe is the window-less build
     # (nothing to close by accident); fall back to the console one if missing.
