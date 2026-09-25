@@ -85,3 +85,10 @@ def test_pending_is_oldest_first(spool, tmp_path):
 def test_empty_spool(spool):
     assert ingest.pending() == []
     assert ingest.claim() == []
+
+
+def test_show_request_is_consumed_once(spool):
+    assert not ingest.take_show_request()
+    ingest.request_show()
+    assert ingest.take_show_request()
+    assert not ingest.take_show_request()

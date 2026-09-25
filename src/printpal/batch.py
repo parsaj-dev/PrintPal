@@ -12,7 +12,8 @@ queue is unit-tested headless; the desktop app passes ``printing.print_label``.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 from PIL import Image
@@ -65,6 +66,7 @@ class PrintQueue:
         self.on_change = on_change
         self.items: list[QueueItem] = []
         self._next_id = 1
+        self._cancel = threading.Event()
 
     # -- building the queue ----------------------------------------------------
     def _new_id(self) -> int:
@@ -72,7 +74,8 @@ class PrintQueue:
         self._next_id += 1
         return i
 
-    def add(self, source: str, title: str | None = None) -> list[QueueItem]:
+    def add(self, source: str, title: str | None = None,
+            on_change: ChangeFn | None = None) -> list[QueueItem]:
         """Detect `source` and enqueue one item per label it contains.
 
         Detection failures (or a file with nothing printable) enqueue a single
@@ -86,7 +89,7 @@ class PrintQueue:
             item = QueueItem(self._new_id(), source, title, status=FAILED,
                              error=f"Could not read: {e}")
             self.items.append(item)
-            self._changed(item)
+            self._changed(item, on_change)
             return [item]
 
         printable = [lab for lab in labels if lab.is_printable]
@@ -94,7 +97,7 @@ class PrintQueue:
             item = QueueItem(self._new_id(), source, title, status=FAILED,
                              error="No label or document found to print.")
             self.items.append(item)
-            self._changed(item)
+            self._changed(item, on_change)
             return [item]
 
         created = []
@@ -105,36 +108,59 @@ class PrintQueue:
                              kind=lab.kind)
             self.items.append(item)
             created.append(item)
-            self._changed(item)
+            self._changed(item, on_change)
         return created
 
-    def add_many(self, sources: list[str]) -> list[QueueItem]:
+    def add_many(self, sources: list[str],
+                 on_change: ChangeFn | None = None) -> list[QueueItem]:
         out: list[QueueItem] = []
         for src in sources:
-            out.extend(self.add(src))
+            out.extend(self.add(src, on_change=on_change))
         return out
+
+    def remove(self, item: QueueItem) -> None:
+        """Drop an item from the queue (a no-op if it is already gone)."""
+        try:
+            self.items.remove(item)
+        except ValueError:
+            pass
+
+    def clear(self) -> None:
+        self.items.clear()
 
     # -- printing --------------------------------------------------------------
     def pending(self) -> list[QueueItem]:
         return [it for it in self.items if it.status in (QUEUED, FAILED) and it.label is not None]
 
-    def print_all(self, routing_enabled: bool = False) -> None:
-        """Print every queued (and retry-eligible failed) item, in order."""
-        for item in list(self.pending()):
-            self._print_item(item, routing_enabled)
+    def cancel(self) -> None:
+        """Stop a running ``print_all`` after the item currently printing."""
+        self._cancel.set()
 
-    def retry(self, item: QueueItem, routing_enabled: bool = False) -> None:
+    def print_all(self, routing_enabled: bool = False,
+                  on_change: ChangeFn | None = None) -> None:
+        """Print every queued (and retry-eligible failed) item, in order."""
+        self._cancel.clear()
+        for item in list(self.pending()):
+            if self._cancel.is_set():
+                break
+            if item not in self.items:
+                continue  # removed by the user while the batch was running
+            self._print_item(item, routing_enabled, on_change)
+
+    def retry(self, item: QueueItem, routing_enabled: bool = False,
+              on_change: ChangeFn | None = None) -> None:
         if item.label is None:
             return
-        self._print_item(item, routing_enabled)
+        self._print_item(item, routing_enabled, on_change)
 
-    def _print_item(self, item: QueueItem, routing_enabled: bool) -> None:
+    def _print_item(self, item: QueueItem, routing_enabled: bool,
+                    on_change: ChangeFn | None = None) -> None:
         item.status = PRINTING
         item.error = None
-        self._changed(item)
+        self._changed(item, on_change)
         try:
-            image = item.label.render_print_image(self.config)
             decision = routing.printer_for(item.kind, self.config, routing_enabled)
+            image = item.label.render_print_image(self.config, full_page=decision.full_page)
             item.printer = decision.printer
             self.print_fn(image, decision.printer, self.config.copies)
             self._record_history(item, image)
@@ -143,7 +169,7 @@ class PrintQueue:
             item.status = FAILED
             item.error = str(e)
             item.retries += 1
-        self._changed(item)
+        self._changed(item, on_change)
 
     def _record_history(self, item: QueueItem, image: Image.Image) -> None:
         if self.history is None:
@@ -161,12 +187,13 @@ class PrintQueue:
         except Exception:  # noqa: BLE001 - history is best-effort, never fatal
             pass
 
-    def _changed(self, item: QueueItem) -> None:
-        if self.on_change:
-            try:
-                self.on_change(item)
-            except Exception:  # noqa: BLE001
-                pass
+    def _changed(self, item: QueueItem, on_change: ChangeFn | None = None) -> None:
+        for fn in (self.on_change, on_change):
+            if fn:
+                try:
+                    fn(item)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- summary ---------------------------------------------------------------
     def summary(self) -> dict[str, int]:

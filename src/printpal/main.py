@@ -45,6 +45,7 @@ def _parse_args(argv: list[str]) -> tuple[str | None, str | None]:
     ``--ingest <file>`` is how the "PrintPal" virtual printer (and any other
     producer) hands a rendered job to the app: it is spooled and drained rather
     than opened as a one-off file. A bare path argument is opened as before.
+    Other ``--flags`` (e.g. ``--background``) are not paths and are skipped.
     """
     ingest_path = None
     positional = []
@@ -54,6 +55,8 @@ def _parse_args(argv: list[str]) -> tuple[str | None, str | None]:
             ingest_path = next(it, None)
         elif arg.startswith("--ingest="):
             ingest_path = arg.split("=", 1)[1]
+        elif arg.startswith("--"):
+            continue
         else:
             positional.append(arg)
     open_path = None
@@ -77,28 +80,6 @@ def _resolve_input(open_path: str | None) -> str | None:
         return None
 
 
-def _resolve_printer(config: Config, log) -> None:
-    """If the saved printer isn't installed, fall back to the system default or
-    the first available printer -- no modal, the UI lets the user change it."""
-    try:
-        from printpal.printing import printer_exists, list_printers, default_printer
-    except Exception:
-        return
-    try:
-        if config.printer and printer_exists(config.printer):
-            return
-        fallback = default_printer()
-        if not fallback:
-            printers = list_printers()
-            fallback = printers[0] if printers else None
-        if fallback:
-            log.info("Configured printer %r missing; using %r", config.printer, fallback)
-            config.printer = fallback
-            config.save()
-    except Exception as e:  # noqa: BLE001
-        log.warning("Printer resolution failed: %s", e)
-
-
 def _ensure_printer_watcher(log) -> None:
     """If the virtual printer is installed, make sure its hidden watcher task is
     running (e.g. after it was stopped). A no-op when it's already running (the
@@ -119,6 +100,8 @@ def main() -> None:
     log.info("PrintPal started")
 
     open_path, ingest_path = _parse_args(sys.argv)
+    # --background: started at sign-in to sit warm in the tray.
+    background = "--background" in sys.argv[1:]
 
     # A printed / watched job is spooled so the running instance (or this one, on
     # startup) drains it through the same engine as a dropped file.
@@ -130,24 +113,34 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("Failed to spool ingest job %r: %s", ingest_path, e)
 
-    input_path = None if ingest_path else _resolve_input(open_path)
+    # A background (sign-in) start must not pick up whatever file happens to be
+    # on the clipboard.
+    input_path = None if (ingest_path or background) else _resolve_input(open_path)
 
     mutex = _acquire_mutex()
     if mutex is None:
-        # Another instance owns the UI. Deliver via the spool, which it polls.
+        # Another instance owns the UI. Deliver via the spool, which it watches.
+        from printpal import ingest
         if input_path:
             try:
-                from printpal import ingest
                 ingest.submit(input_path, origin=ingest.ORIGIN_HANDOFF)
                 log.info("Already running -- spooled %r and exiting.", input_path)
             except Exception as e:  # noqa: BLE001
                 log.warning("Handoff spool failed: %s", e)
+        elif not ingest_path and not background:
+            # Plain relaunch (e.g. the desktop icon while PrintPal sits in the
+            # tray): bring the existing window forward.
+            try:
+                ingest.request_show()
+            except Exception as e:  # noqa: BLE001
+                log.warning("Show request failed: %s", e)
+            log.info("Already running -- asked it to show its window.")
         else:
             log.info("Already running -- job spooled, exiting.")
         return
 
     try:
-        _run(log, input_path)
+        _run(log, input_path, start_hidden=background)
     except Exception:
         log.error("Unhandled error:\n%s", traceback.format_exc())
         try:
@@ -161,11 +154,14 @@ def main() -> None:
         log.info("PrintPal exiting")
 
 
-def _run(log, input_path: str | None) -> None:
+def _run(log, input_path: str | None, start_hidden: bool = False) -> None:
+    import threading
+
     config = Config.load()
     log.info("Config loaded: printer=%s, detect_dpi=%d, print_dpi=%d",
              config.printer, config.detect_dpi, config.print_dpi)
-    _resolve_printer(config, log)
+    # A missing saved printer is fixed up by the window's background printer
+    # scan (printers can take seconds to enumerate; the window doesn't wait).
 
     # Clear last session's spooled jobs before we start watching for new ones.
     try:
@@ -176,11 +172,12 @@ def _run(log, input_path: str | None) -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("Spool cleanup failed: %s", e)
 
-    _ensure_printer_watcher(log)
+    # `schtasks` is a whole process launch -- never make the window wait for it.
+    threading.Thread(target=_ensure_printer_watcher, args=(log,), daemon=True).start()
 
-    log.info("Main window opening (initial file: %s)", input_path)
+    log.info("Main window opening (initial file: %s, hidden: %s)", input_path, start_hidden)
     from printpal.qtui.app import run_app
-    run_app(config, initial_path=input_path, log=log)
+    run_app(config, initial_path=input_path, log=log, start_hidden=start_hidden)
 
 
 if __name__ == "__main__":

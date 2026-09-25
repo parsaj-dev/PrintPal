@@ -9,11 +9,21 @@ from PIL import Image
 from printpal.qtui import theme
 
 
+def pil_to_qimage(img: Image.Image) -> QImage:
+    """PIL -> QImage. Safe to call off the GUI thread (QPixmap is not)."""
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    if img.mode == "L":
+        data = img.tobytes()
+        qimg = QImage(data, img.width, img.height, img.width, QImage.Format_Grayscale8)
+    else:
+        data = img.tobytes()
+        qimg = QImage(data, img.width, img.height, img.width * 3, QImage.Format_RGB888)
+    return qimg.copy()   # copy so the image owns its bytes
+
+
 def pil_to_qpixmap(img: Image.Image) -> QPixmap:
-    img = img.convert("RGBA")
-    data = img.tobytes("raw", "RGBA")
-    qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888)
-    return QPixmap.fromImage(qimg.copy())   # copy so the pixmap owns its bytes
+    return QPixmap.fromImage(pil_to_qimage(img))
 
 
 class PreviewCanvas(QWidget):
@@ -23,6 +33,8 @@ class PreviewCanvas(QWidget):
     def __init__(self, pal: theme.Palette):
         super().__init__()
         self._pix: QPixmap | None = None
+        self._scaled: QPixmap | None = None     # _pix smoothed to the current size
+        self._scaled_for: tuple[int, int] = (0, 0)
         self.pal = pal
         self.setMinimumSize(320, 320)
 
@@ -32,7 +44,9 @@ class PreviewCanvas(QWidget):
 
     def set_image(self, img: Image.Image | None) -> None:
         self._pix = pil_to_qpixmap(img) if img is not None else None
+        self._scaled = None
         self.update()
+
 
     def paintEvent(self, _e) -> None:
         pnt = QPainter(self)
@@ -47,7 +61,13 @@ class PreviewCanvas(QWidget):
         pad = 28
         avail_w = max(1, r.width() - pad * 2)
         avail_h = max(1, r.height() - pad * 2)
-        scaled = self._pix.scaled(avail_w, avail_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # Smooth-scaling a print-size preview is the slowest thing in a paint on
+        # an old PC; do it once per size, not on every repaint.
+        if self._scaled is None or self._scaled_for != (avail_w, avail_h):
+            self._scaled = self._pix.scaled(avail_w, avail_h, Qt.KeepAspectRatio,
+                                            Qt.SmoothTransformation)
+            self._scaled_for = (avail_w, avail_h)
+        scaled = self._scaled
         x = (r.width() - scaled.width()) // 2
         y = (r.height() - scaled.height()) // 2
         shadow = QColor(0, 0, 0, 60 if not self.pal.dark else 110)
@@ -71,7 +91,7 @@ class ThumbTile(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(4)
-        img = QLabel()
+        self._img = img = QLabel()
         img.setPixmap(pixmap)
         img.setAlignment(Qt.AlignCenter)
         cap = QLabel(caption)
@@ -79,6 +99,9 @@ class ThumbTile(QFrame):
         cap.setAlignment(Qt.AlignCenter)
         lay.addWidget(img)
         lay.addWidget(cap)
+
+    def set_pixmap(self, pixmap: QPixmap) -> None:
+        self._img.setPixmap(pixmap)
 
     def set_selected(self, on: bool) -> None:
         self.setProperty("selected", on)

@@ -61,3 +61,18 @@ class TestConfig:
         cfg = Config(printer='HP "Office" \\ Jet')
         cfg.save()
         assert Config.load().printer == 'HP "Office" \\ Jet'
+
+
+def test_new_settings_roundtrip(tmp_config):
+    cfg = Config(smart_routing=True, run_in_background=False)
+    cfg.save()
+    loaded = Config.load()
+    assert loaded.smart_routing is True
+    assert loaded.run_in_background is False
+
+
+def test_new_settings_default_for_old_files(tmp_config):
+    tmp_config.write_text('printer = "X"\n', encoding="utf-8")
+    loaded = Config.load()
+    assert loaded.smart_routing is False
+    assert loaded.run_in_background is True

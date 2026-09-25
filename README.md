@@ -40,6 +40,8 @@ The window shows the detected label at print quality with a confidence read-out.
 
 Prefer no clicks? Turn on **auto-print** in Settings and a single, high-confidence label prints the moment it loads.
 
+Changed your mind? **Close** (or **Esc**) dismisses the label without printing, and **Cancel** in the status bar stops a detection or a batch that is still running.
+
 Designed for thermal label printers like the DYMO LabelWriter 450, Rollo, and Zebra. Works with FedEx, UPS, Purolator, Amazon, and any label PDF or image with barcodes -- whether it arrives as a bare 4x6 or buried on a Letter/A4 sheet.
 
 ## Features
@@ -49,8 +51,9 @@ Designed for thermal label printers like the DYMO LabelWriter 450, Rollo, and Ze
 - **Batch queue** -- drop a folder, several files, or one PDF full of labels and print them all with one click, with a per-label status list (queued / printing / done / failed) and one-click retry.
 - **History + reprint** -- every print is logged (thumbnail, date, carrier, tracking number decoded from the barcode) in a local database. One-click reprint from history, or **Ctrl+R** to reprint the last label.
 - **N-up splitting** -- a page holding 2 or 4 labels (Amazon/Etsy style) is detected and split into individual 4x6 prints automatically.
-- **Smart routing (opt-in)** -- when you enable it for a job, 4x6 labels go to the thermal printer and packing slips / A4 sheets to the paper printer, per page. Off by default; never automatic.
+- **Smart routing (opt-in)** -- pick a label printer and a paper printer in Settings and switch routing on: shipping labels print cropped on the thermal printer, packing slips / documents print as the full page on the paper printer, per page. Works for single files, multi-page files and the batch queue. Off by default; never automatic.
 - **Auto-print** -- optionally print a single high-confidence label the moment it loads.
+- **Built for slow PCs** -- detection, rendering, printing and history all run in the background, so the window never freezes. PrintPal stays in the tray when closed (and can start there when you sign in), so a label printed to PrintPal appears in well under a second instead of waiting for the app to start.
 
 ## Download
 
@@ -115,7 +118,6 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | `printer` | `DYMO LabelWriter 450` | Name of the target printer |
 | `thermal_printer` | `` | Printer for 4x6 labels when smart routing is enabled (falls back to `printer`) |
 | `paper_printer` | `` | Printer for packing slips / A4 when smart routing is enabled |
-| `media_size` | `4x6` | Label media size |
 | `detect_dpi` | `200` | Detection render DPI (lower = faster, but barcodes may not decode below ~180) |
 | `print_dpi` | `300` | Print render DPI |
 | `crop_margin_inches` | `0.08` | Quiet-zone margin around the detected label |
@@ -124,8 +126,22 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | `auto_print_min_confidence` | `0.85` | Confidence needed for auto-print |
 | `split_nup` | `true` | Split multi-label (N-up) pages into individual labels |
 | `dark_mode` | `false` | Use the dark theme |
+| `smart_routing` | `false` | Route labels to `thermal_printer` and documents to `paper_printer` (only takes effect when the two differ) |
+| `run_in_background` | `true` | Closing the window keeps PrintPal in the tray, so prints to the PrintPal printer show up instantly |
 
-Smart routing is only *applied* when you tick it for a job in the Queue -- setting `thermal_printer` / `paper_printer` never reroutes prints on its own.
+Smart routing is only *applied* when you switch it on (Settings, or the toggle in the Label and Queue views) -- setting `thermal_printer` / `paper_printer` never reroutes prints on its own. "Start PrintPal in the tray when I sign in" lives in Settings (installed app) and in the installer.
+
+### Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| Ctrl+O | Open file(s) |
+| Ctrl+V | Open the label file on the clipboard |
+| Ctrl+P | Print the selected label |
+| Ctrl+R | Reprint the last label |
+| Ctrl+Left / Ctrl+Right | Previous / next label in a multi-label file |
+| Esc | Cancel what's running, or close the label |
+| Ctrl+W | Close the label |
 
 Older config files that used `dpi` are still read (it maps to `detect_dpi`).
 
@@ -161,6 +177,7 @@ printer (`winprinter`) sit on top of it.
 ```
 src/printpal/
     main.py          entry point: arg/clipboard input, single-instance, spool drain
+    autostart.py     "start in the tray when I sign in" (per-user Run key)
     detect.py        label detection + N-up splitting, cropping, rotation, recheck
     pipeline.py      turns a file into ready-to-print labels (multi-page, N-up, lazy render)
     rasterize.py     PDF/XPS/image to PIL Image via PyMuPDF (page + region rendering)

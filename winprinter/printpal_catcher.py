@@ -8,8 +8,9 @@ job -- on stdin, or as a file -- and it:
     2. stages it to a file,
     3. converts PostScript to PDF *only* if a Ghostscript path is supplied
        (Ghostscript is AGPL and never bundled -- see winprinter/README.md),
-    4. hands the file to ``PrintPal.exe --ingest <file>``, which spools it and
-       drives the same crop+print engine as a dropped file.
+    4. hands the file to PrintPal: straight into the spool a running instance
+       watches, or via ``PrintPal.exe --ingest <file>`` when it isn't running.
+       Either way it drives the same crop+print engine as a dropped file.
 
 It imports nothing from the PrintPal package -- the only contract is the
 ``--ingest`` CLI -- so the virtual-printer component stays cleanly separable.
@@ -114,6 +115,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_launch:
         print(staged)
         return 0
+
+    if jobio.app_is_running():
+        # PrintPal is open: drop the job straight into its spool -- no process
+        # launch, so the label shows up almost immediately.
+        try:
+            dest = jobio.submit_to_spool(staged, jobio.default_spool_dir())
+            log.info("Delivered %s to the running PrintPal (%s)", staged.name, dest.name)
+            return 0
+        except OSError as e:
+            log.warning("Direct spool hand-off failed (%s); launching PrintPal", e)
 
     exe = jobio.find_printpal_exe(args.printpal)
     if exe is None:

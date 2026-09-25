@@ -15,11 +15,18 @@ engine never depends on it; it only depends on the core app's `--ingest` CLI.
 ```
    Any app  ──File>Print──▶  "PrintPal" printer ──▶ (capture) ──▶ PrintPalPort
    (Chrome…)                 (in-box XPS driver)                       │
-                                                                       ▼
-                                              PrintPal.exe --ingest <job.xps>
+                                     PrintPal running? ──yes──▶ move job into its spool
+                                                       └─no───▶ PrintPal.exe --ingest <job.xps>
                                                                        │
                                             spool ─▶ SAME detect+crop+print engine
 ```
+
+The watcher takes a job the moment it is complete -- it polls every 0.25 s and
+recognises the end of the file (an XPS's ZIP end-of-central-directory record, or
+a PDF's `%%EOF`) rather than waiting for the size to stop changing. When PrintPal
+is already running (e.g. in the tray) the job goes straight into its spool with
+no process launch; the app is notified by the file system and shows the label
+within a fraction of a second.
 
 The job is captured as **XPS** (the OpenXPS page format Windows print drivers
 already produce) and handed to PrintPal, which reads it with **PyMuPDF/MuPDF —

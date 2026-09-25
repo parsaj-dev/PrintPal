@@ -4,11 +4,20 @@ When the "PrintPal" printer uses an in-box XPS driver bound to a local *file*
 port, every print overwrites one file (e.g. ``incoming\\out.xps``). This watcher
 runs in the background (registered at login by install_printer.ps1), grabs each
 finished spool file the moment it is released, renames it out of the way so the
-next job can't clobber it, and hands it to ``PrintPal.exe --ingest``.
+next job can't clobber it, and hands it to PrintPal.
+
+Speed matters here -- this sits between "Print" and the label appearing:
+
+* A job is taken the moment it is *complete*: an XPS (ZIP) ends with its
+  end-of-central-directory record and a PDF with ``%%EOF``, both written last,
+  so we poll every quarter second and act on that instead of waiting seconds for
+  the size to settle. Size-stability remains as a fallback for anything odd.
+* If PrintPal is already running, the job is moved straight into the spool it
+  watches -- no new process, which on an old PC saves seconds per label. Only
+  when it isn't running is ``PrintPal.exe --ingest`` launched.
 
 Polling (not FileSystemWatcher) on purpose: it is simple, dependency-free, and
-robust to the driver holding the file open until the job completes -- we only act
-once a file's size has stopped changing.
+robust to the driver holding the file open until the job completes.
 
 Run:  python printpal_watcher.py [--incoming DIR] [--printpal EXE] [--once]
 """
@@ -26,8 +35,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jobio  # noqa: E402
 
 _WATCH_EXT = (".xps", ".oxps", ".pdf")
-_POLL_SECONDS = 1.0
-_STABLE_TICKS = 2  # size unchanged for this many polls == fully written
+_POLL_SECONDS = 0.25
+# Fallback when a file never shows a recognisable end marker: size unchanged
+# for this many polls (~1.5 s) == fully written.
+_STABLE_TICKS = 6
 
 
 def _default_incoming() -> Path:
@@ -50,8 +61,9 @@ def _logger(incoming: Path) -> logging.Logger:
     return log
 
 
-def _is_stable(path: Path, seen: dict[Path, tuple[int, int]]) -> bool:
-    """True once a file's size has held steady across _STABLE_TICKS polls."""
+def _is_ready(path: Path, seen: dict[Path, tuple[int, int]]) -> bool:
+    """True once a job file is fully written: it ends with its format's end
+    marker, or (fallback) its size has held steady across _STABLE_TICKS polls."""
     try:
         size = path.stat().st_size
     except OSError:
@@ -62,27 +74,47 @@ def _is_stable(path: Path, seen: dict[Path, tuple[int, int]]) -> bool:
     else:
         ticks = 0
     seen[path] = (size, ticks)
-    return ticks >= _STABLE_TICKS
+    if size <= 0:
+        return False
+    return ticks >= _STABLE_TICKS or jobio.looks_complete(path)
 
 
-def _handoff(path: Path, exe: Path | None, log: logging.Logger) -> None:
+def _read_head(path: Path) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(16)
+
+
+def _handoff(path: Path, exe: Path | None, log: logging.Logger,
+             spool: Path | None = None) -> bool:
+    """Claim ``path`` and deliver it. Returns False if it couldn't be claimed yet
+    (e.g. the spooler still has it open), so the caller retries next poll."""
     # Rename out of the way first so a new print can't overwrite it mid-handoff.
-    unique = path.with_name(jobio.staged_path(path.parent,
-                                              jobio.sniff_format(path.read_bytes()[:16])
-                                              or "xps").name)
+    # The rename also fails while the spooler still holds the file open, which
+    # is exactly the "not finished yet" signal we want.
     try:
+        fmt = jobio.sniff_format(_read_head(path)) or jobio.FMT_XPS
+        unique = jobio.staged_path(path.parent, fmt)
         os.replace(path, unique)
     except OSError as e:
-        log.warning("Could not claim %s: %s", path.name, e)
-        return
+        log.debug("Not ready to claim %s yet: %s", path.name, e)
+        return False
+    spool = spool or jobio.default_spool_dir()
+    if jobio.app_is_running():
+        try:
+            dest = jobio.submit_to_spool(unique, spool, title=path.name)
+            log.info("Delivered %s to the running PrintPal (%s)", unique.name, dest.name)
+            return True
+        except OSError as e:
+            log.warning("Direct spool hand-off failed (%s); launching PrintPal", e)
     if exe is None:
         log.error("PrintPal.exe not found; leaving %s staged.", unique.name)
-        return
+        return True
     log.info("Handing off %s -> PrintPal --ingest", unique.name)
     try:
         subprocess.Popen([str(exe), "--ingest", str(unique)], close_fds=True)
     except OSError as e:
         log.error("Failed to launch PrintPal: %s", e)
+    return True
 
 
 def scan_once(incoming: Path, exe: Path | None, seen: dict, log: logging.Logger) -> int:
@@ -92,8 +124,7 @@ def scan_once(incoming: Path, exe: Path | None, seen: dict, log: logging.Logger)
             continue
         if path.name.startswith("printjob-"):
             continue  # already claimed / staged by us
-        if _is_stable(path, seen):
-            _handoff(path, exe, log)
+        if _is_ready(path, seen) and _handoff(path, exe, log):
             seen.pop(path, None)
             handled += 1
     return handled

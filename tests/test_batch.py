@@ -112,3 +112,37 @@ def test_on_change_callback_fires(tmp_path, monkeypatch):
     q.add(_label_png(tmp_path, "a.png"))
     q.print_all()
     assert QUEUED in seen and DONE in seen
+
+
+def test_cancel_stops_after_current_item(tmp_path, monkeypatch):
+    _inject(monkeypatch)
+    q = None
+
+    def printer(image, name, copies):
+        q.cancel()          # the user hits Stop while the first label prints
+
+    q = PrintQueue(Config(), printer)
+    q.add_many([_label_png(tmp_path, "a.png"), _label_png(tmp_path, "b.png")])
+    q.print_all()
+    assert [it.status for it in q.items] == [DONE, QUEUED]
+
+
+def test_remove_and_clear(tmp_path, monkeypatch):
+    _inject(monkeypatch)
+    q = PrintQueue(Config(), _FakePrinter())
+    a, = q.add(_label_png(tmp_path, "a.png"))
+    q.add(_label_png(tmp_path, "b.png"))
+    q.remove(a)
+    q.remove(a)             # already gone: no error
+    assert len(q.items) == 1
+    q.clear()
+    assert q.items == []
+
+
+def test_per_call_on_change(tmp_path, monkeypatch):
+    _inject(monkeypatch)
+    seen = []
+    q = PrintQueue(Config(), _FakePrinter())
+    q.add(_label_png(tmp_path, "a.png"), on_change=lambda it: seen.append(it.status))
+    q.print_all(on_change=lambda it: seen.append(it.status))
+    assert seen == [QUEUED, "printing", DONE]

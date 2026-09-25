@@ -122,3 +122,26 @@ def test_packing_slip_is_not_counted_as_label(tmp_path, monkeypatch):
     assert lab.is_printable          # still selectable if the user wants it
     assert not lab.is_label          # but not a shipping label
     assert lab.kind == "document"
+
+
+def test_full_page_render_is_the_whole_source(tmp_path, monkeypatch):
+    path = _label_png(tmp_path, size=(1700, 2200))   # Letter-sized image
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: [])
+    cfg = Config()
+    lab = process_file(path, cfg)[0]
+    full = lab.render_print_image(cfg, full_page=True)
+    assert full.size == (1700, 2200)
+    assert lab.render_print_image(cfg, full_page=True) is full     # cached
+    lab.rotate_cw()
+    assert lab.render_print_image(cfg, full_page=True).size == (2200, 1700)
+
+
+def test_reset_render_cache(tmp_path, monkeypatch):
+    path = _label_png(tmp_path)
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: [_FakeBarcode(100, 500, 400, 80)])
+    cfg = Config()
+    lab = process_file(path, cfg)[0]
+    lab.render_print_image(cfg)
+    lab.render_print_image(cfg, full_page=True)
+    lab.reset_render_cache()
+    assert lab._print_cache is None and lab._page_cache is None

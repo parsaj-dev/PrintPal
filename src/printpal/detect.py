@@ -127,6 +127,18 @@ def _zbar(gray: np.ndarray, fallback: bool = True):
     return zbar_decode(src)
 
 
+def _is_label_media(shape: tuple[int, ...], dpi: int) -> bool:
+    return min(shape[0], shape[1]) / dpi <= LABEL_MEDIA_MAX_SHORT_IN
+
+
+def _scan(gray: np.ndarray, dpi: int):
+    """The page's barcode scan. On document media (Letter/A4) only the shipping
+    symbologies count: a retail EAN/UPC on a packing slip must not turn it into
+    a "label" (that would route it to the thermal printer), and skipping the
+    all-symbology rescan makes a barcode-less page roughly twice as fast."""
+    return _zbar(gray, fallback=_is_label_media(gray.shape, dpi))
+
+
 def _to_gray(img: Image.Image) -> np.ndarray:
     # PIL's L conversion uses the same ITU-R 601 weights as cv2's RGB2GRAY, and
     # converting straight to one channel avoids a full-colour array copy.
@@ -316,10 +328,9 @@ def find_label(img: Image.Image, dpi: int = 200,
             warnings=["This page looks blank -- no content to print."],
         )
 
-    short_in = min(W, H) / dpi
-    is_label_media = short_in <= LABEL_MEDIA_MAX_SHORT_IN
+    is_label_media = _is_label_media(ink.shape, dpi)
 
-    barcodes = _barcodes if _barcodes is not None else _zbar(gray)
+    barcodes = _barcodes if _barcodes is not None else _scan(gray, dpi)
     from_upscale = False
     if not barcodes and not is_label_media:
         # Dense codes on a big sheet sometimes need more resolution. One retry at
@@ -501,7 +512,7 @@ def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
     if _content_bbox(ink) is None:
         return [find_label(img, dpi, margin_inches, _gray=gray, _barcodes=[])]
 
-    barcodes = _zbar(gray)
+    barcodes = _scan(gray, dpi)
 
     def single() -> list[LabelResult]:
         return [find_label(img, dpi, margin_inches, _gray=gray, _barcodes=barcodes)]

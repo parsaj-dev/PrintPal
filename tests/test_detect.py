@@ -299,3 +299,30 @@ class TestLoadImage:
     def test_rejects_missing_page(self):
         with pytest.raises(ValueError, match="does not exist"):
             rasterize_pdf(str(SAMPLE_PDF), dpi=150, page=99)
+
+
+class TestRetailBarcodes:
+    """On Letter/A4 only shipping symbologies make a page a label: a packing
+    slip's retail EAN/UPC (found only by the all-symbology rescan) must not."""
+
+    def _decode_retail_only(self, monkeypatch, calls):
+        def fake(img, **kw):
+            calls.append(kw.get("symbols"))
+            return [] if kw.get("symbols") else [_FakeBarcode(400, 400, 300, 90, type="EAN13")]
+        monkeypatch.setattr(detect, "zbar_decode", fake)
+
+    def test_document_media_skips_retail_fallback(self, monkeypatch):
+        calls = []
+        self._decode_retail_only(monkeypatch, calls)
+        img = with_block(blank(1700, 2200), (250, 200, 1450, 1400))
+        r = detect.find_labels(img, dpi=200)[0]
+        assert r.kind == KIND_DOCUMENT
+        assert all(c is not None for c in calls)   # never an all-symbology scan
+
+    def test_label_media_still_uses_fallback(self, monkeypatch):
+        calls = []
+        self._decode_retail_only(monkeypatch, calls)
+        img = with_block(blank(800, 1200), (40, 40, 760, 1160))
+        r = detect.find_labels(img, dpi=200)[0]
+        assert r.kind == KIND_LABEL and r.barcodes_in == 1
+        assert None in calls

@@ -47,7 +47,7 @@ def _make_thumb(image: Image.Image) -> bytes:
     thumb = image.convert("RGB").copy()
     thumb.thumbnail((THUMB_MAX, THUMB_MAX), Image.LANCZOS)
     buf = io.BytesIO()
-    thumb.save(buf, format="PNG")
+    thumb.save(buf, format="PNG", compress_level=1)
     return buf.getvalue()
 
 
@@ -59,7 +59,9 @@ class History:
         self._ensure()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+        # A fresh connection per call keeps this safe to use from the print
+        # worker thread as well as the UI thread.
+        conn = sqlite3.connect(str(self.db_path), timeout=5)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -92,7 +94,11 @@ class History:
     def record(self, entry: HistoryEntry, print_image: Image.Image) -> int:
         """Store a print: save its image + thumbnail, insert the row, return id."""
         image_name = f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}.png"
-        print_image.convert("RGB").save(self.img_dir / image_name, format="PNG")
+        # compress_level=1: a label is mostly white, so the fastest zlib level is
+        # nearly as small as the default and several times quicker to write on
+        # an old PC -- this runs right after every print.
+        print_image.convert("RGB").save(self.img_dir / image_name, format="PNG",
+                                        compress_level=1)
         thumb = _make_thumb(print_image)
         w, h = print_image.size
         with self._connect() as c:
@@ -158,6 +164,12 @@ class History:
             return int(c.execute("SELECT COUNT(*) FROM prints").fetchone()[0])
 
     def clear(self) -> None:
-        for entry in self.recent(limit=10_000):
-            if entry.id is not None:
-                self.delete(entry.id)
+        with self._connect() as c:
+            names = [r[0] for r in c.execute("SELECT image_name FROM prints")]
+            c.execute("DELETE FROM prints")
+        for name in names:
+            if name:
+                try:
+                    (self.img_dir / name).unlink()
+                except OSError:
+                    pass

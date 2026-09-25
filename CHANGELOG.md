@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.8.0
+
+### Faster: print-to-PrintPal and printing
+- **The virtual printer hands jobs over ~2-3 s sooner.** The watcher now spots
+  a finished job by its end marker (an XPS's ZIP end record, a PDF's `%%EOF`)
+  on a 0.25 s poll, instead of waiting for the file size to hold still across
+  two 1-second polls.
+- **No more process launch per job when PrintPal is open.** The watcher (and
+  the RedMon catcher) move the job straight into the spool the running app
+  watches, instead of starting `PrintPal.exe --ingest` just to pass it along --
+  seconds saved per label on an old PC.
+- **The app sees new jobs instantly** (a file-system notification rather than
+  a 0.7 s poll), and drains queued jobs back to back.
+- **Keeps running in the tray** when closed, and can start there when you sign
+  in (installer option, and in Settings), so there is no cold start between
+  "Print" and the preview. A second launch brings the existing window forward.
+- **Printing never freezes the window.** Rendering, spooling and the history
+  write all run in the background (prints go out in order); the print image is
+  pre-rendered while you look at the preview, so Print is immediate; auto-print
+  starts the moment detection finishes.
+- History PNGs are written with fast compression; the history list is only
+  built when you open it; queue rows update individually instead of the whole
+  list being rebuilt per label; the preview is rescaled once per size rather
+  than on every repaint.
+- Startup no longer waits for `schtasks` or a printer check.
+- Packing slips on Letter/A4 skip the slow all-barcode-types rescan (see below).
+
+### Added
+- **Close** a label without printing (button, Esc or Ctrl+W), **Cancel** a
+  running detection, **Stop** a batch, and remove single items from the queue.
+- Opening a file while another is still being read now replaces it instead of
+  being silently ignored.
+- Ctrl+V pastes a label (the README promised it; now it's wired up).
+
+### Smart routing
+- One saved on/off setting, shared by Settings and toggles in the Label and
+  Queue views (previously a per-session checkbox in the Queue only, and the
+  Label view ignored routing entirely).
+- **Documents routed to the paper printer print as the full page**, not the
+  cropped content block.
+- Each label shows where it will print ("→ HP LaserJet (full page)"); the
+  toggle is only offered once two different printers are chosen.
+- A retail EAN/UPC barcode on a Letter/A4 packing slip no longer makes it count
+  as a shipping label (which would have routed it to the label printer).
+
+### Fixed
+- **Settings (and other dialogs) were unreadable** -- dark background with dark
+  text -- on PCs using the Windows dark colour scheme. The app now themes every
+  window and dialog itself, independent of the Windows setting.
+- Spin boxes and drop-downs had no visible arrows; check boxes had no tick.
+- Settings no longer freezes while it lists printers (it reuses the list the
+  window already loaded in the background).
+- The unused "Media size" setting is gone from Settings (the page size always
+  comes from the printer driver).
+- Spooled print jobs are now deleted once they're closed or replaced, instead
+  of piling up until the next start.
+- Upgrading/uninstalling while PrintPal or the printer watcher is running no
+  longer fails with "file in use".
+- XPS/OXPS files copied in Explorer are accepted from the clipboard.
+
 ## 0.7.1
 
 ### Fixed

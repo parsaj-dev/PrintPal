@@ -102,3 +102,85 @@ class TestWatcher:
 def test_port_dispatcher_imports():
     port = _load("printpal_port")
     assert port.main(["bogus"]) == 64  # usage error for an unknown subcommand
+
+
+class TestCompletion:
+    def test_xps_complete_only_with_end_record(self, tmp_path):
+        import zipfile
+        p = tmp_path / "out.xps"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("FixedDocSeq.fdseq", "<x/>" * 100)
+        assert jobio.looks_complete(p)
+        p.write_bytes(p.read_bytes()[:-22])      # cut off the central-directory end
+        assert not jobio.looks_complete(p)
+
+    def test_pdf_complete_on_eof(self, tmp_path):
+        p = tmp_path / "out.pdf"
+        p.write_bytes(b"%PDF-1.7\n" + b"x" * 5000)
+        assert not jobio.looks_complete(p)
+        p.write_bytes(p.read_bytes() + b"\n%%EOF\n")
+        assert jobio.looks_complete(p)
+
+    def test_missing_file(self, tmp_path):
+        assert not jobio.looks_complete(tmp_path / "nope.xps")
+
+
+class TestDirectSpool:
+    def test_spool_contract_matches_the_app(self, tmp_path, monkeypatch):
+        """What the watcher writes, printpal.ingest must claim as a ready job."""
+        from printpal import ingest
+        monkeypatch.setattr(ingest, "SPOOL_DIR", tmp_path / "spool")
+        doc = tmp_path / "printjob-1.xps"
+        doc.write_bytes(b"PK\x03\x04 data")
+        dest = jobio.submit_to_spool(doc, tmp_path / "spool", title="out.xps")
+        assert not doc.exists() and dest.exists()
+        job = ingest.claim_one()
+        assert job is not None
+        assert job.doc_path == dest and job.title == "out.xps"
+        assert job.origin == ingest.ORIGIN_PRINTER
+
+    def test_app_not_running_off_windows(self):
+        assert jobio.app_is_running() is False
+
+
+class TestFastWatcher:
+    def setup_method(self):
+        self.watcher = _load("printpal_watcher")
+
+    def _complete_xps(self, path):
+        import zipfile
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("a.fpage", "<FixedPage/>")
+
+    def test_complete_job_is_taken_on_first_poll(self, tmp_path, monkeypatch):
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        self._complete_xps(incoming / "out.xps")
+        monkeypatch.setattr(self.watcher.jobio, "app_is_running", lambda: True)
+        monkeypatch.setattr(self.watcher.jobio, "default_spool_dir", lambda: tmp_path / "spool")
+        log = self.watcher._logger(incoming)
+        assert self.watcher.scan_once(incoming, None, {}, log) == 1
+        assert not (incoming / "out.xps").exists()
+        assert list((tmp_path / "spool").glob("*.ppjob"))     # delivered, no launch
+
+    def test_partial_job_waits(self, tmp_path):
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        (incoming / "out.xps").write_bytes(b"PK\x03\x04 still being written")
+        log = self.watcher._logger(incoming)
+        seen: dict = {}
+        assert self.watcher.scan_once(incoming, None, seen, log) == 0
+        assert (incoming / "out.xps").exists()
+
+    def test_launches_printpal_when_not_running(self, tmp_path, monkeypatch):
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        self._complete_xps(incoming / "out.xps")
+        launched = []
+        monkeypatch.setattr(self.watcher.jobio, "app_is_running", lambda: False)
+        monkeypatch.setattr(self.watcher.subprocess, "Popen",
+                            lambda args, **kw: launched.append(args))
+        log = self.watcher._logger(incoming)
+        exe = tmp_path / "PrintPal.exe"
+        assert self.watcher.scan_once(incoming, exe, {}, log) == 1
+        assert launched and launched[0][1] == "--ingest"

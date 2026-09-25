@@ -13,6 +13,9 @@ Recognised formats:
 """
 from __future__ import annotations
 
+import json
+import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +26,15 @@ FMT_PS = "ps"
 FMT_UNKNOWN = "unknown"
 
 _EXT = {FMT_PDF: ".pdf", FMT_XPS: ".xps", FMT_PS: ".ps"}
+
+# Must match printpal.main._MUTEX_NAME: held by the running PrintPal window.
+APP_MUTEX = "Global\\PrintPalSingleInstance"
+
+# The spool contract shared with printpal.ingest (kept literal so this component
+# never imports the app): the document is moved in first, then a JSON sidecar
+# "<uid>.ppjob" appears atomically as the ready signal.
+_SPOOL_READY = ".ppjob"
+ORIGIN_PRINTER = "printer"
 
 
 def sniff_format(data: bytes) -> str:
@@ -90,3 +102,70 @@ def find_printpal_exe(explicit: str | None = None) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def looks_complete(path: str | Path) -> bool:
+    """True once a spooled job has been written out in full.
+
+    XPS is a ZIP, and a ZIP's *last* record is the end-of-central-directory
+    (``PK\\x05\\x06``); a PDF ends with ``%%EOF``. Both are written last, so
+    seeing them means the driver has finished -- no need to wait seconds for
+    the file size to stop changing.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size < 22:
+                return False
+            # The EOCD sits in the last 22 bytes plus an optional comment
+            # (almost always empty); 1 KB covers it and a PDF's trailer.
+            f.seek(max(0, size - 1024))
+            tail = f.read()
+    except OSError:
+        return False
+    return b"PK\x05\x06" in tail[-(22 + 256):] or b"%%EOF" in tail
+
+
+def default_spool_dir() -> Path:
+    """The spool the PrintPal app watches (printpal.ingest.SPOOL_DIR)."""
+    base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(base) / "PrintPal" / "spool"
+
+
+def app_is_running() -> bool:
+    """True if a PrintPal window is running (it holds the single-instance
+    mutex). Uses ctypes, so the watcher needs no pywin32."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    synchronize = 0x00100000
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenMutexW(synchronize, False, APP_MUTEX)
+    if not handle:
+        return False
+    k32.CloseHandle(handle)
+    return True
+
+
+def submit_to_spool(doc: str | Path, spool_dir: str | Path, title: str | None = None,
+                    origin: str = ORIGIN_PRINTER) -> Path:
+    """Hand a job straight to a *running* PrintPal by moving it into the spool
+    it watches -- no process launch, so it shows up almost instantly.
+
+    Mirrors ``printpal.ingest.submit(move=True)``: the document is renamed into
+    place first and the sidecar (written to a temp name, then renamed) is the
+    ready signal, so the app never sees a half-delivered job.
+    """
+    src = Path(doc)
+    spool = Path(spool_dir)
+    spool.mkdir(parents=True, exist_ok=True)
+    uid = f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
+    dest = spool / f"{uid}{src.suffix.lower()}"
+    os.replace(src, dest)
+    meta = {"doc": dest.name, "title": title or src.name, "origin": origin,
+            "submitted_at": time.time()}
+    part = spool / f"{uid}{_SPOOL_READY}.part"
+    part.write_text(json.dumps(meta), encoding="utf-8")
+    os.replace(part, spool / f"{uid}{_SPOOL_READY}")
+    return dest

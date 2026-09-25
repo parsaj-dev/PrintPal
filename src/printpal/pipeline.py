@@ -10,6 +10,7 @@ through a 20-page PDF stays instant.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -18,7 +19,7 @@ from PIL import Image
 from printpal.config import Config
 from printpal.detect import KIND_BLANK, LabelResult, find_labels, _rotate_upright
 from printpal.rasterize import (
-    image_dpi, is_document, iter_pages, rasterize_pdf_region,
+    image_dpi, is_document, iter_pages, load_image, rasterize_pdf, rasterize_pdf_region,
 )
 
 # Guard against someone copying a giant multi-hundred-page PDF by mistake.
@@ -45,6 +46,11 @@ class ProcessedLabel:
     region_count: int = 1               # labels found on this page
     manual_rotation: int = 0            # extra clockwise degrees (0/90/180/270)
     _print_cache: Image.Image | None = field(default=None, repr=False)
+    _page_cache: Image.Image | None = field(default=None, repr=False)
+    # Print images are rendered on worker threads (a background pre-render right
+    # after detection, then the print job); the lock makes the second caller wait
+    # for -- and reuse -- the first one's render instead of doing it twice.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     # -- read-only conveniences ------------------------------------------------
     @property
@@ -76,36 +82,58 @@ class ProcessedLabel:
 
     # -- manual rotation -------------------------------------------------------
     def rotate_cw(self) -> None:
-        self.manual_rotation = (self.manual_rotation + 90) % 360
-        self._print_cache = None
+        self._set_rotation(self.manual_rotation + 90)
 
     def rotate_ccw(self) -> None:
-        self.manual_rotation = (self.manual_rotation - 90) % 360
-        self._print_cache = None
+        self._set_rotation(self.manual_rotation - 90)
 
     def reset_rotation(self) -> None:
-        self.manual_rotation = 0
-        self._print_cache = None
+        self._set_rotation(0)
+
+    def reset_render_cache(self) -> None:
+        """Forget rendered print images (e.g. after the print DPI changed)."""
+        with self._lock:
+            self._print_cache = None
+            self._page_cache = None
+
+    def _set_rotation(self, degrees: int) -> None:
+        with self._lock:
+            self.manual_rotation = degrees % 360
+            self._print_cache = None
+            self._page_cache = None
 
     # -- print rendering -------------------------------------------------------
-    def render_print_image(self, config: Config) -> Image.Image:
-        """High-resolution, upright label ready for the spooler. Cached."""
-        if self._print_cache is not None:
+    def render_print_image(self, config: Config, full_page: bool = False) -> Image.Image:
+        """High-resolution, upright label ready for the spooler. Cached.
+
+        ``full_page`` renders the whole source page instead of the detected crop
+        (used when a document is routed to a paper printer)."""
+        with self._lock:
+            if full_page:
+                if self._page_cache is None:
+                    self._page_cache = _apply_manual(self._render_page(config),
+                                                     self.manual_rotation)
+                return self._page_cache
+            if self._print_cache is None:
+                self._print_cache = _apply_manual(self._render_crop(config),
+                                                  self.manual_rotation)
             return self._print_cache
 
+    def _render_crop(self, config: Config) -> Image.Image:
         if is_document(self.source_path):
             base = rasterize_pdf_region(
                 self.source_path, self.result.box,
                 self.result.detect_dpi, config.print_dpi, page=self.page_index,
             )
-            base = _rotate_upright(base, self.result.orientation)
-        else:
-            # Image files were detected at native resolution, so the preview
-            # crop already is print quality.
-            base = self.result.image
+            return _rotate_upright(base, self.result.orientation)
+        # Image files were detected at native resolution, so the preview crop
+        # already is print quality.
+        return self.result.image
 
-        self._print_cache = _apply_manual(base, self.manual_rotation)
-        return self._print_cache
+    def _render_page(self, config: Config) -> Image.Image:
+        if is_document(self.source_path):
+            return rasterize_pdf(self.source_path, config.print_dpi, page=self.page_index)
+        return load_image(self.source_path)
 
 
 def process_file(path: str, config: Config,

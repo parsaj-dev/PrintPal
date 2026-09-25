@@ -24,6 +24,8 @@ DEFAULT_AUTO_PRINT = False
 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE = 0.85
 DEFAULT_SPLIT_NUP = True
 DEFAULT_DARK_MODE = False
+DEFAULT_SMART_ROUTING = False
+DEFAULT_RUN_IN_BACKGROUND = True
 
 _CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 CONFIG_PATH = _CONFIG_DIR / "config.toml"
@@ -51,14 +53,21 @@ def _as_bool(value, fallback: bool) -> bool:
     return fallback
 
 
+def _q(value: str) -> str:
+    """A TOML basic string. Escapes backslashes/quotes so a Windows printer name
+    (e.g. a \\\\server\\share path) never breaks the file."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 @dataclass
 class Config:
     printer: str = DEFAULT_PRINTER
-    # Smart routing (opt-in, never automatic): where 4x6 labels vs paper
-    # documents go when the user enables routing for a job. Empty falls back to
-    # `printer`.
+    # Smart routing targets: where labels vs paper documents go when
+    # `smart_routing` is on. Empty falls back to `printer`.
     thermal_printer: str = ""
     paper_printer: str = ""
+    # Informational only: the printed size always comes from the printer
+    # driver's page, so this is kept for older configs but not used.
     media_size: str = DEFAULT_MEDIA
     detect_dpi: int = DEFAULT_DETECT_DPI
     print_dpi: int = DEFAULT_PRINT_DPI
@@ -68,6 +77,12 @@ class Config:
     auto_print_min_confidence: float = DEFAULT_AUTO_PRINT_MIN_CONFIDENCE
     split_nup: bool = DEFAULT_SPLIT_NUP
     dark_mode: bool = DEFAULT_DARK_MODE
+    # The user's own opt-in: when on (and both routing printers are set), labels
+    # go to `thermal_printer` and documents to `paper_printer`. Off by default.
+    smart_routing: bool = DEFAULT_SMART_ROUTING
+    # Closing the window keeps PrintPal running in the tray, so a print to the
+    # PrintPal printer shows up instantly instead of cold-starting the app.
+    run_in_background: bool = DEFAULT_RUN_IN_BACKGROUND
 
     # Backwards-compatible alias: older configs and callers used `dpi` for the
     # detection raster resolution.
@@ -91,17 +106,12 @@ class Config:
     def save(self) -> None:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         self.clamped()
-        # Escape backslashes/quotes so a Windows printer name never breaks TOML.
-        printer = self.printer.replace("\\", "\\\\").replace('"', '\\"')
-        media = self.media_size.replace("\\", "\\\\").replace('"', '\\"')
-        thermal = self.thermal_printer.replace("\\", "\\\\").replace('"', '\\"')
-        paper = self.paper_printer.replace("\\", "\\\\").replace('"', '\\"')
         lines = [
             "# PrintPal configuration -- safe to edit by hand.",
-            f'printer = "{printer}"',
-            f'thermal_printer = "{thermal}"',
-            f'paper_printer = "{paper}"',
-            f'media_size = "{media}"',
+            f"printer = {_q(self.printer)}",
+            f"thermal_printer = {_q(self.thermal_printer)}",
+            f"paper_printer = {_q(self.paper_printer)}",
+            f"media_size = {_q(self.media_size)}",
             f"detect_dpi = {self.detect_dpi}",
             f"print_dpi = {self.print_dpi}",
             f"crop_margin_inches = {self.crop_margin_inches}",
@@ -110,8 +120,14 @@ class Config:
             f"auto_print_min_confidence = {self.auto_print_min_confidence}",
             f"split_nup = {str(self.split_nup).lower()}",
             f"dark_mode = {str(self.dark_mode).lower()}",
+            f"smart_routing = {str(self.smart_routing).lower()}",
+            f"run_in_background = {str(self.run_in_background).lower()}",
         ]
-        CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Write-then-rename so a crash (or a second save racing this one) never
+        # leaves a truncated config behind.
+        tmp = CONFIG_PATH.with_suffix(".toml.tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, CONFIG_PATH)
 
     @classmethod
     def load(cls) -> "Config":
@@ -145,4 +161,8 @@ class Config:
                 DEFAULT_AUTO_PRINT_MIN_CONFIDENCE),
             split_nup=_as_bool(data.get("split_nup", DEFAULT_SPLIT_NUP), DEFAULT_SPLIT_NUP),
             dark_mode=_as_bool(data.get("dark_mode", DEFAULT_DARK_MODE), DEFAULT_DARK_MODE),
+            smart_routing=_as_bool(data.get("smart_routing", DEFAULT_SMART_ROUTING),
+                                   DEFAULT_SMART_ROUTING),
+            run_in_background=_as_bool(data.get("run_in_background", DEFAULT_RUN_IN_BACKGROUND),
+                                       DEFAULT_RUN_IN_BACKGROUND),
         ).clamped()

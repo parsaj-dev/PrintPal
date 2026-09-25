@@ -34,6 +34,10 @@ SPOOL_DIR = _CONFIG_DIR / "spool"
 _READY = ".ppjob"      # a submitted, ready-to-process job
 _TAKEN = ".pptaken"    # claimed by a consumer, processing in progress
 
+# A second launch with nothing to open drops this file to ask the running
+# instance (which may be hidden in the tray) to show its window.
+_SHOW_REQUEST = "show.request"
+
 # Documents/images the engine can ingest.
 _ALLOWED_EXT = (".pdf", ".xps", ".oxps", ".png", ".jpg", ".jpeg",
                 ".tif", ".tiff", ".bmp", ".gif", ".webp")
@@ -206,6 +210,21 @@ def _silent_unlink(path: Path) -> None:
         Path(path).unlink()
     except OSError:
         pass
+
+
+def request_show() -> None:
+    """Ask the running instance to bring its window to the front."""
+    _ensure_dir()
+    (SPOOL_DIR / _SHOW_REQUEST).write_text(str(time.time()), encoding="utf-8")
+
+
+def take_show_request() -> bool:
+    """True (once) if a show request is pending; consumes it."""
+    try:
+        (SPOOL_DIR / _SHOW_REQUEST).unlink()
+        return True
+    except OSError:
+        return False
 
 
 def clear() -> None:
