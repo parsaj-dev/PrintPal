@@ -11,6 +11,7 @@ import datetime as _dt
 import os
 import sys
 import threading
+import time
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -607,6 +608,7 @@ class MainWindow(QWidget):
         self._gen += 1
         self._detecting = True
         self._loading_job = job
+        self._detect_t0 = time.perf_counter()
         self._go(NAV_LABEL)
         self.status.setText(f"Reading {os.path.basename(path)}…")
         self._set_working(True)
@@ -640,6 +642,11 @@ class MainWindow(QWidget):
         if gen != self._gen:
             return   # cancelled or replaced by a newer load
         job, self._loading_job = self._loading_job, None
+        if self.log:
+            self.log.info("Detected %d label(s) in %.2fs%s", len(labels),
+                          time.perf_counter() - self._detect_t0,
+                          f", {time.time() - job.submitted_at:.2f}s after spooling"
+                          if job is not None and job.submitted_at else "")
         self._finish_detect()
         printable = [l for l in labels if l.is_printable]
         if not printable:
@@ -1207,7 +1214,9 @@ class MainWindow(QWidget):
         if job is not None:
             self.show_window()
             if self.log:
-                self.log.info("Ingesting spooled job %s (%s)", job.doc_path.name, job.origin)
+                self.log.info("Ingesting spooled job %s (%s), %.2fs after it was spooled",
+                              job.doc_path.name, job.origin,
+                              time.time() - (job.submitted_at or time.time()))
             self.load_path(str(job.doc_path), job=job)
 
     # ------------------------------------------------------------- drag & drop

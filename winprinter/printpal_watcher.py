@@ -92,6 +92,10 @@ def _handoff(path: Path, exe: Path | None, log: logging.Logger,
     # The rename also fails while the spooler still holds the file open, which
     # is exactly the "not finished yet" signal we want.
     try:
+        st = path.stat()
+        # Timing for diagnosis: how long ago the driver created the file (i.e.
+        # how long Windows spent rendering/spooling it) and how big it is.
+        age = time.time() - st.st_ctime
         fmt = jobio.sniff_format(_read_head(path)) or jobio.FMT_XPS
         unique = jobio.staged_path(path.parent, fmt)
         os.replace(path, unique)
@@ -102,14 +106,16 @@ def _handoff(path: Path, exe: Path | None, log: logging.Logger,
     if jobio.app_is_running():
         try:
             dest = jobio.submit_to_spool(unique, spool, title=path.name)
-            log.info("Delivered %s to the running PrintPal (%s)", unique.name, dest.name)
+            log.info("Delivered %s to the running PrintPal (%s): %d KB, file created %.1fs ago",
+                     unique.name, dest.name, st.st_size // 1024, age)
             return True
         except OSError as e:
             log.warning("Direct spool hand-off failed (%s); launching PrintPal", e)
     if exe is None:
         log.error("PrintPal.exe not found; leaving %s staged.", unique.name)
         return True
-    log.info("Handing off %s -> PrintPal --ingest", unique.name)
+    log.info("Handing off %s -> PrintPal --ingest (PrintPal not running): %d KB, "
+             "file created %.1fs ago", unique.name, st.st_size // 1024, age)
     try:
         subprocess.Popen([str(exe), "--ingest", str(unique)], close_fds=True)
     except OSError as e:
