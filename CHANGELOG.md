@@ -28,6 +28,10 @@
 - Packing slips on Letter/A4 skip the slow all-barcode-types rescan (see below).
 
 ### Added
+- **Adjust crop.** Wrong area? Click ✎ Adjust to see the whole page with every
+  area PrintPal found outlined: hover to highlight one, click to use it, or drag
+  to draw your own box (Whole page / Reset too). Barcode rotation is re-derived
+  for the new area. Low-confidence crops point you to it.
 - **Close** a label without printing (button, Esc or Ctrl+W), **Cancel** a
   running detection, **Stop** a batch, and remove single items from the queue.
 - Opening a file while another is still being read now replaces it instead of
@@ -46,6 +50,10 @@
   as a shipping label (which would have routed it to the label printer).
 
 ### Fixed
+- Return labels laid out as a label + legal text above a full-width "cut here"
+  line and instructions (e.g. FedEx returns) were cropped to the whole top half
+  of the sheet; the crop now stays on the label.
+- FedEx's 34-digit barcode now shows as FedEx with the 12-digit tracking number.
 - **Settings (and other dialogs) were unreadable** -- dark background with dark
   text -- on PCs using the Windows dark colour scheme. The app now themes every
   window and dialog itself, independent of the Windows setting.

@@ -17,7 +17,7 @@ from typing import Callable
 from PIL import Image
 
 from printpal.config import Config
-from printpal.detect import KIND_BLANK, LabelResult, find_labels, _rotate_upright
+from printpal.detect import KIND_BLANK, LabelResult, find_labels, orientation_for, _rotate_upright
 from printpal.rasterize import (
     image_dpi, is_document, iter_pages, load_image, rasterize_pdf, rasterize_pdf_region,
 )
@@ -93,6 +93,44 @@ class ProcessedLabel:
     def reset_render_cache(self) -> None:
         """Forget rendered print images (e.g. after the print DPI changed)."""
         with self._lock:
+            self._print_cache = None
+            self._page_cache = None
+
+    # -- choosing a different area --------------------------------------------
+    def page_image(self) -> Image.Image:
+        """The whole source page at the detection DPI -- the coordinate space of
+        ``result.box`` and ``result.candidates``. Rendered on demand (it is only
+        needed when the user adjusts the crop)."""
+        if is_document(self.source_path):
+            return rasterize_pdf(self.source_path, self.result.detect_dpi, page=self.page_index)
+        return load_image(self.source_path)
+
+    def apply_box(self, box: tuple[int, int, int, int], page: Image.Image,
+                  margin_px: int = 0) -> None:
+        """Use ``box`` (page px at detect DPI) as the crop instead of the detected
+        one: re-crop, re-derive the upright rotation from the barcodes inside it,
+        and drop cached print renders."""
+        W, H = page.size
+        x0, y0, x1, y1 = (int(v) for v in box)
+        x0, y0 = max(0, x0 - margin_px), max(0, y0 - margin_px)
+        x1, y1 = min(W, x1 + margin_px), min(H, y1 + margin_px)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            raise ValueError("That area is too small to print.")
+        box = (x0, y0, x1, y1)
+        r = self.result
+        full = box == (0, 0, W, H)
+        # A whole page keeps the page's own orientation (its text reads as the
+        # sender laid it out); a smaller area turns upright with its barcodes.
+        orientation = "UP" if full else orientation_for(box, r.barcode_boxes, default="UP")
+        with self._lock:
+            r.box = box
+            r.orientation = orientation
+            r.image = _rotate_upright(page.crop(box), orientation)
+            r.method = "manual"
+            r.confidence = 1.0
+            r.is_full_page = full
+            r.warnings = []
+            self.manual_rotation = 0
             self._print_cache = None
             self._page_cache = None
 

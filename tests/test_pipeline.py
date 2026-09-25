@@ -145,3 +145,18 @@ def test_reset_render_cache(tmp_path, monkeypatch):
     lab.render_print_image(cfg, full_page=True)
     lab.reset_render_cache()
     assert lab._print_cache is None and lab._page_cache is None
+
+
+def test_apply_box_recrops_and_resets(tmp_path, monkeypatch):
+    path = _label_png(tmp_path, size=(1700, 2200))
+    monkeypatch.setattr(detect, "zbar_decode", lambda img, **kw: [_FakeBarcode(100, 500, 400, 80)])
+    cfg = Config()
+    lab = process_file(path, cfg)[0]
+    page = lab.page_image()
+    lab.rotate_cw()
+    lab.apply_box((50, 60, 850, 1260), page, margin_px=10)
+    assert lab.result.box == (40, 50, 860, 1270)
+    assert lab.preview_image.size == (820, 1220)
+    assert lab.result.method == "manual" and lab.manual_rotation == 0
+    with pytest.raises(ValueError):
+        lab.apply_box((5, 5, 6, 6), page)

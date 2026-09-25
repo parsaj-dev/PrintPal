@@ -37,6 +37,8 @@ _PATTERNS: list[tuple[str, re.Pattern, int]] = [
     (USPS, re.compile(r"\b(9[1-5]\d{18,24})\b"), 1),
     # UPU S10 (EE123456789US) used by USPS/international.
     (USPS, re.compile(r"\b([A-Z]{2}\d{9}US)\b"), 1),
+    # FedEx Express 34-digit barcode: the last 12 digits are the tracking number.
+    (FEDEX, re.compile(r"\b\d{22}(\d{12})\b"), 1),
     # FedEx Ground "96" barcode: 22 digits starting 96.
     (FEDEX, re.compile(r"\b(96\d{20})\b"), 1),
     # DHL: 10 digits (express) commonly, or JD/JJD prefixes.

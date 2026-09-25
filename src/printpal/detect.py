@@ -68,6 +68,12 @@ class LabelResult:
     kind: str = KIND_LABEL             # KIND_LABEL / KIND_DOCUMENT / KIND_BLANK
     barcode_data: list[str] = field(default_factory=list)  # decoded payloads
     warnings: list[str] = field(default_factory=list)
+    # Other plausible crops on the page (source px, no margin), best first, so
+    # the user can pick one when the automatic choice is wrong.
+    candidates: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # Decoded barcodes as ((x0, y0, x1, y1), orientation), to re-derive the
+    # rotation when the user picks a different area.
+    barcode_boxes: list[tuple[tuple[int, int, int, int], str]] = field(default_factory=list)
 
     @property
     def is_label(self) -> bool:
@@ -246,6 +252,11 @@ def _grow_aligned(box: tuple[int, int, int, int],
                 continue
             if overlap_x < 0.35 * min(bx1 - bx0, cx1 - cx0):
                 continue  # only clips the edge -- a neighbouring column, not ours
+            if overlap_x < 0.5 * (cx1 - cx0):
+                # Mostly outside our column: a full-width cut line, banner or
+                # instructions block below the label. Joining it would drag the
+                # crop across the whole sheet (and then into every column).
+                continue
             if cy0 >= by1:
                 gap = cy0 - by1
             elif cy1 <= by0:
@@ -262,10 +273,10 @@ def _grow_aligned(box: tuple[int, int, int, int],
     return box
 
 
-def _label_block(ink: np.ndarray, barcode_rects, dpi: int
+def _label_block(ink: np.ndarray, barcode_rects, dpi: int, comps=None
                  ) -> tuple[tuple[int, int, int, int], str]:
     """Find the label's bounding box on a document-sized page."""
-    comps = _components(ink, dpi)
+    comps = _components(ink, dpi) if comps is None else comps
     if not comps:
         H, W = ink.shape
         return (0, 0, W, H), "whole-page"
@@ -352,6 +363,7 @@ def find_label(img: Image.Image, dpi: int = 200,
     warnings: list[str] = []
     brects = _barcode_rects(barcodes)
 
+    comps = None
     if is_label_media:
         kind = KIND_LABEL
         is_full_page = True
@@ -371,7 +383,8 @@ def find_label(img: Image.Image, dpi: int = 200,
     else:
         is_full_page = False
         kind = KIND_LABEL if barcodes else KIND_DOCUMENT
-        box, method = _label_block(ink, brects, dpi)
+        comps = _components(ink, dpi)
+        box, method = _label_block(ink, brects, dpi, comps)
         if barcodes:
             confidence = 0.9
         else:
@@ -387,6 +400,7 @@ def find_label(img: Image.Image, dpi: int = 200,
                             "extra text. Check the preview.")
 
     orientation = _dominant_orientation(barcodes)
+    candidates = _candidates(box, ink, comps, dpi)
 
     # Quiet-zone margin so a barcode is never clipped flush to the edge.
     margin = int(round(dpi * max(0.0, margin_inches)))
@@ -435,7 +449,49 @@ def find_label(img: Image.Image, dpi: int = 200,
         kind=kind,
         barcode_data=_barcode_payloads(barcodes),
         warnings=warnings,
+        candidates=candidates,
+        barcode_boxes=[(r, str(getattr(b, "orientation", "UP") or "UP"))
+                       for r, b in zip(brects, barcodes)],
     )
+
+
+def _iou(a, b) -> float:
+    inter = _rect_overlap(a, b)
+    if not inter:
+        return 0.0
+    area = lambda r: (r[2] - r[0]) * (r[3] - r[1])  # noqa: E731
+    return inter / float(area(a) + area(b) - inter)
+
+
+def _candidates(chosen, ink: np.ndarray, comps, dpi: int, limit: int = 12):
+    """Alternative crops to offer the user: the automatic choice, every sizeable
+    block of content, all content together, and the whole page."""
+    H, W = ink.shape
+    out = [tuple(int(v) for v in chosen)]
+    min_w, min_h = 0.8 * dpi, 0.5 * dpi
+    for c in comps or []:
+        if c[2] - c[0] >= min_w and c[3] - c[1] >= min_h:
+            out.append(tuple(int(v) for v in c[:4]))
+    bbox = _content_bbox(ink)
+    if bbox:
+        out.append(bbox)
+    out.append((0, 0, W, H))
+    uniq: list[tuple[int, int, int, int]] = []
+    for c in out:
+        if all(_iou(c, u) < 0.9 for u in uniq):
+            uniq.append(c)
+    return uniq[:limit]
+
+
+def orientation_for(box, barcode_boxes, default: str = "UP") -> str:
+    """Upright orientation for a user-chosen ``box``: the dominant orientation
+    of the barcodes inside it (weighted by area), else ``default``."""
+    weight: dict[str, float] = {}
+    for (x0, y0, x1, y1), o in barcode_boxes:
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if box[0] <= cx < box[2] and box[1] <= cy < box[3]:
+            weight[o] = weight.get(o, 0.0) + max(1, (x1 - x0) * (y1 - y0))
+    return max(weight, key=weight.get) if weight else default
 
 
 # -- N-up: multiple labels on one page ----------------------------------------
@@ -542,6 +598,9 @@ def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
                 continue
             bx0, by0, bx1, by1 = r.box
             r.box = (bx0 + cx0, by0 + cy0, bx1 + cx0, by1 + cy0)  # back to page coords
+            shift = lambda b: (b[0] + cx0, b[1] + cy0, b[2] + cx0, b[3] + cy0)  # noqa: E731
+            r.candidates = [shift(c) for c in r.candidates]
+            r.barcode_boxes = [(shift(b), o) for b, o in r.barcode_boxes]
             results.append(r)
 
     if sum(1 for r in results if r.is_label) >= 2:

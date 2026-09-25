@@ -39,3 +39,8 @@ def test_unknown_keeps_raw():
 def test_empty():
     s = parse_tracking([])
     assert s.carrier == UNKNOWN and s.tracking is None
+
+
+def test_fedex_34_digit_barcode():
+    s = parse_tracking(["2099241341640371430100877039461820"])
+    assert s.carrier == "FedEx" and s.tracking == "877039461820"

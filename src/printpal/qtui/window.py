@@ -322,7 +322,10 @@ class MainWindow(QWidget):
         self.btn_save = QPushButton("Save…"); self.btn_save.setObjectName("Tool")
         self.btn_save.setToolTip("Save the cropped label as a PNG")
         self.btn_save.clicked.connect(self.save_current)
-        for b in (self.btn_close, self.btn_ccw, self.btn_cw, self.btn_save):
+        self.btn_adjust = QPushButton("✎  Adjust"); self.btn_adjust.setObjectName("Tool")
+        self.btn_adjust.setToolTip("Wrong area? Pick another one, or draw your own")
+        self.btn_adjust.clicked.connect(self.adjust_crop)
+        for b in (self.btn_close, self.btn_adjust, self.btn_ccw, self.btn_cw, self.btn_save):
             ab.addWidget(b)
         ab.addStretch(1)
         self.copies = QSpinBox(); self.copies.setRange(1, 99); self.copies.setValue(self.config.copies)
@@ -826,8 +829,10 @@ class MainWindow(QWidget):
             where = "full page" if d.full_page else "cropped"
             self.info.addWidget(make_chip(f"→ {d.printer} ({where})", theme.BRAND, p.brand_tint))
         self.info.addStretch(1)
-        if r.warnings:
-            warn = QLabel("⚠  " + r.warnings[0]); warn.setWordWrap(True)
+        if r.warnings or (lab.is_label and r.confidence < 0.85):
+            text = r.warnings[0] if r.warnings else "Check the crop"
+            warn = QLabel("⚠  " + text + "  — use ✎ Adjust to pick another area.")
+            warn.setWordWrap(True)
             warn.setObjectName("Warn")
             self.info.addWidget(warn)
 
@@ -844,6 +849,38 @@ class MainWindow(QWidget):
             self._tiles[self.selected].set_pixmap(self._thumb(lab))
         self._render_selected()
         self._prerender_selected()
+
+    def adjust_crop(self) -> None:
+        """Let the user swap the detected area for another one, or draw a box."""
+        if not self.labels:
+            return
+        from printpal.qtui.crop import CropDialog
+        lab = self.labels[self.selected]
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            page = lab.page_image()
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "PrintPal", f"Couldn't open the page.\n\n{e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        r = lab.result
+        dlg = CropDialog(self, page, r.candidates or [r.box], r.box, self.dark)
+        dlg.set_dpi(r.detect_dpi)
+        if not dlg.exec():
+            return
+        box, custom = dlg.result_box()
+        margin = 0 if custom else int(round(r.detect_dpi * self.config.crop_margin_inches))
+        try:
+            lab.apply_box(box, page, margin_px=margin)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        if self._tiles:
+            self._tiles[self.selected].set_pixmap(self._thumb(lab))
+        self._render_selected()
+        self._prerender_selected()
+        self.status.setText("Crop updated.")
 
     # ------------------------------------------------------------- pre-render
     def _prerender(self, lab: ProcessedLabel) -> None:

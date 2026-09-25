@@ -326,3 +326,28 @@ class TestRetailBarcodes:
         r = detect.find_labels(img, dpi=200)[0]
         assert r.kind == KIND_LABEL and r.barcodes_in == 1
         assert None in calls
+
+
+class TestDoesNotSwallowSheet:
+    def test_full_width_block_below_is_not_joined(self, monkeypatch):
+        # A label block, then (0.5in below) a full-width cut line + instructions
+        # block. The crop must stay on the label, not spread across the sheet.
+        img = blank(1653, 2339)
+        img = with_block(img, (960, 300, 1450, 1050))      # the label
+        img = with_block(img, (230, 150, 760, 980))        # a side column (legal text)
+        img = with_block(img, (0, 1150, 1653, 1570))       # full-width instructions
+        inject_barcodes(monkeypatch, [_FakeBarcode(1005, 305, 400, 120)])
+        r = find_label(img, dpi=200, margin_inches=0)
+        near = lambda a, b: all(abs(x - y) <= 2 for x, y in zip(a, b))  # noqa: E731
+        assert near(r.box, (960, 300, 1450, 1050))
+        # ...but the other blocks are offered as alternatives.
+        assert any(near(c, (0, 1150, 1653, 1570)) for c in r.candidates)
+        assert (0, 0, 1653, 2339) in r.candidates
+
+
+def test_orientation_for_uses_barcodes_inside():
+    from printpal.detect import orientation_for
+    bcs = [((10, 10, 110, 40), "DOWN"), ((500, 500, 600, 530), "LEFT")]
+    assert orientation_for((0, 0, 200, 200), bcs) == "DOWN"
+    assert orientation_for((400, 400, 700, 700), bcs) == "LEFT"
+    assert orientation_for((300, 0, 400, 100), bcs) == "UP"
