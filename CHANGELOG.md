@@ -53,7 +53,7 @@
 - Return labels laid out as a label + legal text above a full-width "cut here"
   line and instructions (e.g. FedEx returns) were cropped to the whole top half
   of the sheet; the crop now stays on the label.
-- FedEx's 34-digit barcode now shows as FedEx with the 12-digit tracking number.
+- 34-digit barcodes are read correctly: FedEx shows its 12-digit tracking number, Purolator its PIN (told apart by the FedEx check digit).
 - **Settings (and other dialogs) were unreadable** -- dark background with dark
   text -- on PCs using the Windows dark colour scheme. The app now themes every
   window and dialog itself, independent of the Windows setting.

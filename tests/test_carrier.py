@@ -44,3 +44,8 @@ def test_empty():
 def test_fedex_34_digit_barcode():
     s = parse_tracking(["2099241341640371430100877039461820"])
     assert s.carrier == "FedEx" and s.tracking == "877039461820"
+
+
+def test_purolator_34_digit_barcode_gives_pin():
+    s = parse_tracking(["0810831279452075400376901000102020"])
+    assert s.carrier == "Purolator" and s.tracking == "520754003769"

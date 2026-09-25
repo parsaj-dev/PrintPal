@@ -37,8 +37,6 @@ _PATTERNS: list[tuple[str, re.Pattern, int]] = [
     (USPS, re.compile(r"\b(9[1-5]\d{18,24})\b"), 1),
     # UPU S10 (EE123456789US) used by USPS/international.
     (USPS, re.compile(r"\b([A-Z]{2}\d{9}US)\b"), 1),
-    # FedEx Express 34-digit barcode: the last 12 digits are the tracking number.
-    (FEDEX, re.compile(r"\b\d{22}(\d{12})\b"), 1),
     # FedEx Ground "96" barcode: 22 digits starting 96.
     (FEDEX, re.compile(r"\b(96\d{20})\b"), 1),
     # DHL: 10 digits (express) commonly, or JD/JJD prefixes.
@@ -59,6 +57,25 @@ def _clean(payload: str) -> str:
     return "".join(ch for ch in p if ch.isprintable()).strip()
 
 
+def _fedex_check_ok(num: str) -> bool:
+    """FedEx Express 12-digit tracking check digit (weights 1,3,7 from the right)."""
+    body = [int(c) for c in num[:11]][::-1]
+    total = sum(d * (1, 3, 7)[i % 3] for i, d in enumerate(body))
+    return total % 11 % 10 == int(num[11])
+
+
+def _parse_34(payload: str) -> Shipment | None:
+    """FedEx and Purolator both print a 34-digit barcode. FedEx's tracking number
+    is the last 12 digits (and carries a FedEx check digit); Purolator's PIN is
+    digits 12-23."""
+    if len(payload) != 34 or not payload.isdigit():
+        return None
+    last12 = payload[-12:]
+    if _fedex_check_ok(last12):
+        return Shipment(carrier=FEDEX, tracking=last12)
+    return Shipment(carrier=PUROLATOR, tracking=payload[11:23])
+
+
 def parse_tracking(payloads: list[str]) -> Shipment:
     """Return the carrier + tracking number recognised from decoded barcodes.
 
@@ -66,6 +83,10 @@ def parse_tracking(payloads: list[str]) -> Shipment:
     to (UNKNOWN, first-non-empty-payload) so nothing is silently lost.
     """
     cleaned = [_clean(p) for p in payloads if p and p.strip()]
+    for payload in cleaned:
+        hit = _parse_34(payload)
+        if hit is not None:
+            return hit
     for carrier, pattern, grp in _PATTERNS:
         for payload in cleaned:
             m = pattern.search(payload)
