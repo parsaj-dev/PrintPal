@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Manual builds (Actions tab -> Run workflow, or the API) produce downloadable
+  # artifacts without cutting a tagged release -- handy for trying a branch.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -41,9 +44,20 @@ jobs:
       - name: Build with PyInstaller (one-folder)
         run: pyinstaller printpal.spec
 
+      - name: Bundle virtual-printer scripts (top level, next to the exe)
+        run: |
+          Copy-Item "winprinter\install_printer.ps1"   "dist\PrintPal\"
+          Copy-Item "winprinter\uninstall_printer.ps1" "dist\PrintPal\"
+          New-Item -ItemType Directory -Force "dist\PrintPal\winprinter" | Out-Null
+          Copy-Item "winprinter\README.md" "dist\PrintPal\winprinter\"
+        shell: pwsh
+
       - name: Verify build
         run: |
           if (!(Test-Path "dist/PrintPal/PrintPal.exe")) { throw "PrintPal.exe not found" }
+          if (!(Test-Path "dist/PrintPal/PrintPalPort.exe")) { throw "PrintPalPort.exe not found" }
+          if (!(Test-Path "dist/PrintPal/PrintPalWatcher.exe")) { throw "PrintPalWatcher.exe not found" }
+          if (!(Test-Path "dist/PrintPal/install_printer.ps1")) { throw "install_printer.ps1 not bundled" }
           $mb = [math]::Round((Get-Item "dist/PrintPal/PrintPal.exe").Length / 1MB, 1)
           Write-Host "PrintPal.exe: $mb MB"
         shell: pwsh
@@ -64,7 +78,17 @@ jobs:
         run: Compress-Archive -Path "dist/PrintPal/*" -DestinationPath "PrintPal-Portable.zip"
         shell: pwsh
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrintPal-${{ github.sha }}
+          path: |
+            installer_output/PrintPal-Setup.exe
+            PrintPal-Portable.zip
+          if-no-files-found: error
+
       - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
