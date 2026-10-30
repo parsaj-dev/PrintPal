@@ -32,12 +32,13 @@ class DetectWorker(QRunnable):
     """
 
     def __init__(self, path: str, config: Config, generation: int,
-                 prerender: Callable[[list], None] | None = None):
+                 prerender: Callable[[list], None] | None = None, memory=None):
         super().__init__()
         self.path = path
         self.config = config
         self.generation = generation
         self.prerender = prerender
+        self.memory = memory
         self.signals = DetectSignals()
 
     @Slot()
@@ -47,7 +48,8 @@ class DetectWorker(QRunnable):
         try:
             labels = process_file(
                 self.path, self.config,
-                progress=lambda msg, i, n: self.signals.progress.emit(gen, msg))
+                progress=lambda msg, i, n: self.signals.progress.emit(gen, msg),
+                memory=self.memory)
         except Exception as e:  # noqa: BLE001 - surface to the user
             self.signals.error.emit(gen, str(e) or e.__class__.__name__)
             return

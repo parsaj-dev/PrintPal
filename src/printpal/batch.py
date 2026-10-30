@@ -59,8 +59,11 @@ class PrintQueue:
     """A flat, per-label print queue with retry and optional history logging."""
 
     def __init__(self, config: Config, print_fn: PrintFn,
-                 history: History | None = None, on_change: ChangeFn | None = None):
+                 history: History | None = None, on_change: ChangeFn | None = None,
+                 memory=None):
         self.config = config
+        # Learned crops (learn.CropMemory), used while ``config.learn_crops`` is on.
+        self.memory = memory
         self.print_fn = print_fn
         self.history = history
         self.on_change = on_change
@@ -84,7 +87,8 @@ class PrintQueue:
         title = title or os.path.basename(source) or source
         from printpal.pipeline import process_file  # heavy; loaded on first use
         try:
-            labels = process_file(source, self.config)
+            memory = self.memory if self.config.learn_crops else None
+            labels = process_file(source, self.config, memory=memory)
         except Exception as e:  # noqa: BLE001 - surface any read/detect failure
             item = QueueItem(self._new_id(), source, title, status=FAILED,
                              error=f"Could not read: {e}")

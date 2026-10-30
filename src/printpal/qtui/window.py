@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from PIL import Image
 
-from printpal import ingest, routing
+from printpal import ingest, learn, routing
 from printpal.batch import DONE, FAILED, PRINTING, PrintQueue, QUEUED, QueueItem
 from printpal.carrier import parse_tracking
 from printpal.config import Config
@@ -82,6 +82,7 @@ class _Call(QRunnable):
 
 class MainWindow(QWidget):
     _printers_loaded = Signal(list)   # delivered from the background lister
+    _relearned = Signal(list)         # labels a just-taught crop was re-applied to
 
     def __init__(self, config: Config, initial_path: str | None = None, log=None):
         super().__init__()
@@ -95,7 +96,9 @@ class MainWindow(QWidget):
         self.print_pool = QThreadPool(self)
         self.print_pool.setMaxThreadCount(1)
         self.history = History()
-        self.queue = PrintQueue(config, print_label, history=self.history)
+        self.crop_memory = learn.CropMemory()
+        self.queue = PrintQueue(config, print_label, history=self.history,
+                                memory=self.crop_memory)
 
         self.labels: list[ProcessedLabel] = []
         self.selected = 0
@@ -126,6 +129,7 @@ class MainWindow(QWidget):
         self._icon = QIcon(icon) if icon else QIcon()
         self.setWindowIcon(self._icon)
 
+        self._relearned.connect(self._on_relearned)
         self._build()
         self.apply_theme()
         self._build_tray()
@@ -615,7 +619,8 @@ class MainWindow(QWidget):
         self._go(NAV_LABEL)
         self.status.setText(f"Reading {os.path.basename(path)}…")
         self._set_working(True)
-        worker = DetectWorker(path, self.config, self._gen, prerender=self._prerender_first)
+        worker = DetectWorker(path, self.config, self._gen, prerender=self._prerender_first,
+                              memory=self.crop_memory if self.config.learn_crops else None)
         # Cross-thread signals -> main-thread slots (Qt queues them automatically).
         worker.signals.done.connect(self._on_detect_done)
         worker.signals.error.connect(self._on_detect_error)
@@ -824,6 +829,11 @@ class MainWindow(QWidget):
             self.info.addWidget(self._muted(f"Label {lab.region_index + 1} of {lab.region_count}"))
         elif lab.page_count > 1:
             self.info.addWidget(self._muted(f"Page {lab.page_index + 1} of {lab.page_count}"))
+        if lab.learned:
+            chip = make_chip("✓ Learned crop", theme.BRAND, p.brand_tint)
+            chip.setToolTip(f"Cropped the way you taught PrintPal for {lab.learned}. "
+                            "Use ✎ Adjust to change or forget it.")
+            self.info.addWidget(chip)
         if self._routing_on():
             d = self._decision(lab)
             where = "full page" if d.full_page else "cropped"
@@ -851,36 +861,105 @@ class MainWindow(QWidget):
         self._prerender_selected()
 
     def adjust_crop(self) -> None:
-        """Let the user swap the detected area for another one, or draw a box."""
+        """Let the user swap the detected area for another one, or draw a box --
+        and, unless they untick it, teach the fix to PrintPal for this layout."""
         if not self.labels:
             return
-        from printpal.qtui.crop import CropDialog
+        from printpal.pipeline import can_learn
+        from printpal.qtui.crop import AUTO, EXACT, WHOLE, CropDialog
         lab = self.labels[self.selected]
+        r = lab.result
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             page = lab.page_image()
+            ink = learn.ink_of(page)
+            snapper = learn.Snapper(ink, r.detect_dpi)
+            layout = None
+            if self.config.learn_crops and can_learn(lab):
+                if lab.fingerprint is None:
+                    lab.fingerprint = learn.fingerprint(ink, r.detect_dpi, r.barcode_boxes,
+                                                        r.barcode_types)
+                layout = learn.describe(lab.fingerprint, parse_tracking(r.barcode_data).carrier)
+                hit = self.crop_memory.find(lab.fingerprint)
+                if hit is not None and hit.name:
+                    layout = hit.name   # keep the name it was taught under
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "PrintPal", f"Couldn't open the page.\n\n{e}")
             return
         finally:
             QApplication.restoreOverrideCursor()
-        r = lab.result
-        dlg = CropDialog(self, page, r.candidates or [r.box], r.box, self.dark)
+        dlg = CropDialog(self, page, r.candidates or [r.box], r.box, self.dark,
+                         snap=snapper.snap, auto_box=lab.auto_box, remember=layout,
+                         learned=bool(lab.learned))
         dlg.set_dpi(r.detect_dpi)
         if not dlg.exec():
             return
-        box, custom = dlg.result_box()
-        margin = 0 if custom else int(round(r.detect_dpi * self.config.crop_margin_inches))
-        try:
-            lab.apply_box(box, page, margin_px=margin)
-        except ValueError as e:
-            self.status.setText(str(e))
-            return
+        box, mode = dlg.result_box()
+        if mode is None:
+            return   # nothing changed
+        teach = dlg.remember()
+        if mode == AUTO:
+            lab.restore_auto()
+            note = "Back to the automatic crop."
+            if teach and self.crop_memory.forget(lab.fingerprint) is not None:
+                note = f"Back to the automatic crop — PrintPal forgot the crop for {layout}."
+        else:
+            # Picked areas and snapped boxes are content-tight: add the usual
+            # quiet zone. An exact box or the whole page is used as is.
+            exact = mode in (EXACT, WHOLE)
+            margin = 0 if exact else int(round(r.detect_dpi * self.config.crop_margin_inches))
+            try:
+                lab.apply_box(box, page, margin_px=margin)
+            except ValueError as e:
+                self.status.setText(str(e))
+                return
+            lab.learned = None
+            note = "Crop updated."
+            if teach:
+                self.crop_memory.learn(
+                    lab.fingerprint, box, r.detect_dpi, name=layout,
+                    exact=mode == EXACT, whole=mode == WHOLE,
+                    inside=learn.barcodes_inside(r.box, r.barcode_boxes))
+                lab.learned = layout
+                note = f"Crop updated — learned for {layout}. Next time it's automatic."
+                self._reapply_learned(lab)
         if self._tiles:
             self._tiles[self.selected].set_pixmap(self._thumb(lab))
         self._render_selected()
         self._prerender_selected()
-        self.status.setText("Crop updated.")
+        self.status.setText(note)
+
+    def _reapply_learned(self, taught: ProcessedLabel) -> None:
+        """Other pages on screen with the layout just taught (a PDF of five
+        FedEx labels) pick the new crop up straight away, in the background.
+        Pages the user adjusted by hand are left alone."""
+        from printpal.pipeline import apply_memory, can_learn
+        others = [l for l in self.labels if l is not taught and can_learn(l)
+                  and l.result.method != "manual"]
+        if not others:
+            return
+        memory, config = self.crop_memory, self.config
+
+        def work():
+            changed = []
+            for l in others:
+                try:
+                    if apply_memory(l, l.page_image(), memory, config):
+                        changed.append(l)
+                except Exception:  # noqa: BLE001 - best effort; Adjust still works
+                    continue
+            if changed:
+                self._relearned.emit(changed)
+        self.pool.start(_Call(work))
+
+    def _on_relearned(self, changed: list) -> None:
+        ids = {id(l) for l in changed}
+        for i, l in enumerate(self.labels):
+            if id(l) in ids and i < len(self._tiles):
+                self._tiles[i].set_pixmap(self._thumb(l))
+        if self.labels and id(self.labels[self.selected]) in ids:
+            self._render_selected()
+            self._prerender_selected()
 
     # ------------------------------------------------------------- pre-render
     def _prerender(self, lab: ProcessedLabel) -> None:
@@ -1202,13 +1281,15 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------- settings
     def open_settings(self) -> None:
-        before = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup)
-        dlg = SettingsDialog(self, self.config, self._printers)
+        before = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup,
+                  self.config.learn_crops, len(self.crop_memory))
+        dlg = SettingsDialog(self, self.config, self._printers, memory=self.crop_memory)
         if not dlg.exec():
             return
         self._fill_printers(self._printers)
         self.copies.setValue(self.config.copies)
-        after = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup)
+        after = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup,
+                 self.config.learn_crops, len(self.crop_memory))
         if self.labels and before != after:
             # Detection settings changed: re-run it on the file on screen.
             self.load_path(self.labels[0].source_path, job=self._current_job)

@@ -24,6 +24,7 @@
 - [Download](#download)
 - [Print to PrintPal from any app](#print-to-printpal-from-any-app)
 - [How the detection works](#how-the-detection-works)
+- [Learned crops](#learned-crops)
 - [Input handling](#input-handling)
 - [Configuration](#configuration)
 - [Building from source](#building-from-source)
@@ -37,6 +38,8 @@
 3. Check the crop, pick your printer, and hit **Print**.
 
 The window shows the detected label at print quality with a confidence read-out. Multi-page files (several labels, or a label plus a packing slip) get a thumbnail rail so you can page through and print any of them. You can rotate a label by hand, set the number of copies, or save the crop as a PNG.
+
+Crop wrong? Click **✎ Adjust**, then click the right area or drag a rough box around it -- it snaps to the content inside, so it doesn't have to be neat. PrintPal **remembers the fix for that label layout**: the next label from the same template is cropped that way automatically (see [Learned crops](#learned-crops)).
 
 Prefer no clicks? Turn on **auto-print** in Settings and a single, high-confidence label prints the moment it loads.
 
@@ -85,6 +88,18 @@ If no barcode is found, PrintPal keeps the whole page (or the largest content bl
 
 **N-up pages** (2 or 4 labels in a grid, Amazon/Etsy style) are detected by clustering the barcodes and cutting the page at the whitespace gutters *between* the labels, so each one is cropped and printed as an individual 4x6. This can be turned off (`split_nup`) to keep the whole page as one.
 
+## Learned crops
+
+When you fix a crop in **✎ Adjust** (with "Remember for ..." ticked, the default), PrintPal learns it for that *layout*, not that one file:
+
+- **What counts as the same layout:** the page size plus where each barcode sits (its type, position and size). A carrier's template puts its barcodes in the same place on every label while the address and tracking number change, so the next FedEx return on Letter matches and a UPS 4x6 doesn't. A coarse map of where the ink is backs that up, and is the whole test for a page without barcodes.
+- **Your box doesn't have to be exact:** a drawn box is snapped to the content inside it -- a text line or barcode you clipped comes back whole, white space and a sliver of the instructions you strayed into are dropped. (Untick *Snap to content* to use exactly what you draw.) The snap runs again on every new label, so the crop follows that label's own content instead of replaying your pixels, and the template is aligned on its barcodes, so a label that sits a little lower on the sheet still crops right.
+- **It gets steadier, not sloppier:** the last few fixes for a layout are kept and the crop is their per-edge median, so one rough fix doesn't undo good ones. A fix that disagrees with the others by more than half an inch is a change of mind and replaces them.
+- **You can see it and undo it:** a label cropped from memory shows a **✓ Learned crop** chip. In Adjust, **Automatic** goes back to PrintPal's own crop and offers to forget the layout; Settings has *Forget all* and an on/off switch. If a learned crop would cut off a barcode on some label, it is flagged and its confidence drops below the auto-print threshold.
+- Other pages of the open file with the same layout pick the new crop up immediately, and the batch queue uses learned crops too. N-up sheets (several labels per page) are not learned.
+
+Everything stays local, in `%APPDATA%\PrintPal\crop_memory.json`.
+
 ## Input handling
 
 PrintPal accepts a label from any of:
@@ -128,6 +143,7 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | `dark_mode` | `false` | Use the dark theme |
 | `smart_routing` | `false` | Route labels to `thermal_printer` and documents to `paper_printer` (only takes effect when the two differ) |
 | `run_in_background` | `true` | Closing the window keeps PrintPal in the tray, so prints to the PrintPal printer show up instantly |
+| `learn_crops` | `true` | Remember crop fixes made in Adjust per label layout and reuse them (see [Learned crops](#learned-crops)) |
 
 Smart routing is only *applied* when you switch it on (Settings, or the toggle in the Label and Queue views) -- setting `thermal_printer` / `paper_printer` never reroutes prints on its own. "Start PrintPal in the tray when I sign in" lives in Settings (installed app) and in the installer.
 
@@ -180,6 +196,7 @@ src/printpal/
     autostart.py     "start in the tray when I sign in" (per-user Run key)
     detect.py        label detection + N-up splitting, cropping, rotation, recheck
     pipeline.py      turns a file into ready-to-print labels (multi-page, N-up, lazy render)
+    learn.py         learned crops: layout fingerprint, snap-to-content, crop memory
     rasterize.py     PDF/XPS/image to PIL Image via PyMuPDF (page + region rendering)
     printing.py      Windows GDI print spooler, Lanczos-to-device scaling
     ingest.py        job spool: one hand-off point for the virtual printer,
@@ -192,7 +209,7 @@ src/printpal/
     config.py        tolerant TOML config in AppData
     log.py           rotating file logger
     qtui/            the PySide6 desktop UI
-        app.py, window.py, widgets.py, workers.py, settings.py, theme.py
+        app.py, window.py, widgets.py, workers.py, settings.py, theme.py, crop.py
 winprinter/          optional Windows virtual printer (XPS -> ingest -> engine)
     jobio.py, printpal_catcher.py, printpal_watcher.py, printpal_port.py
     install_printer.ps1, uninstall_printer.ps1, README.md

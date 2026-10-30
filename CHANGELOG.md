@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **PrintPal learns from your crop fixes.** Fix a crop in ✎ Adjust and it is
+  remembered for that label layout (page size + where the barcodes sit), so the
+  next label from the same template is cropped right with no clicks. On by
+  default ("Remember for FedEx labels on Letter paper" in the dialog); a
+  "✓ Learned crop" chip shows when it is used.
+- **Rough boxes are fine.** A box you drag snaps to the content inside it --
+  clipped lines and barcodes come back whole, stray white space and slivers of
+  the instructions are dropped (untick *Snap to content* for an exact box). The
+  snap re-runs on every new label, and the template is aligned on its barcodes,
+  so the crop follows each label's own content and position.
+- Repeated fixes are combined (per-edge median of the last five), a very
+  different fix replaces the old ones, other pages of the open file update at
+  once, and the batch queue uses learned crops. **Automatic** in Adjust goes back
+  to PrintPal's own crop and can forget the layout; Settings has an on/off
+  switch and *Forget all*. A learned crop that would clip a barcode is flagged
+  and never auto-prints.
+
 ## 0.8.0
 
 ### Faster: print-to-PrintPal and printing

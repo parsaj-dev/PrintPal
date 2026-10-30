@@ -26,6 +26,7 @@ DEFAULT_SPLIT_NUP = True
 DEFAULT_DARK_MODE = False
 DEFAULT_SMART_ROUTING = False
 DEFAULT_RUN_IN_BACKGROUND = True
+DEFAULT_LEARN_CROPS = True
 
 _CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 CONFIG_PATH = _CONFIG_DIR / "config.toml"
@@ -83,6 +84,9 @@ class Config:
     # Closing the window keeps PrintPal running in the tray, so a print to the
     # PrintPal printer shows up instantly instead of cold-starting the app.
     run_in_background: bool = DEFAULT_RUN_IN_BACKGROUND
+    # Remember crop fixes made in Adjust crop, per label layout, and use them
+    # automatically next time (see learn.py).
+    learn_crops: bool = DEFAULT_LEARN_CROPS
 
     # Backwards-compatible alias: older configs and callers used `dpi` for the
     # detection raster resolution.
@@ -122,6 +126,7 @@ class Config:
             f"dark_mode = {str(self.dark_mode).lower()}",
             f"smart_routing = {str(self.smart_routing).lower()}",
             f"run_in_background = {str(self.run_in_background).lower()}",
+            f"learn_crops = {str(self.learn_crops).lower()}",
         ]
         # Write-then-rename so a crash (or a second save racing this one) never
         # leaves a truncated config behind.
@@ -165,4 +170,6 @@ class Config:
                                    DEFAULT_SMART_ROUTING),
             run_in_background=_as_bool(data.get("run_in_background", DEFAULT_RUN_IN_BACKGROUND),
                                        DEFAULT_RUN_IN_BACKGROUND),
+            learn_crops=_as_bool(data.get("learn_crops", DEFAULT_LEARN_CROPS),
+                                 DEFAULT_LEARN_CROPS),
         ).clamped()

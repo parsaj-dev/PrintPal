@@ -64,11 +64,12 @@ class TestConfig:
 
 
 def test_new_settings_roundtrip(tmp_config):
-    cfg = Config(smart_routing=True, run_in_background=False)
+    cfg = Config(smart_routing=True, run_in_background=False, learn_crops=False)
     cfg.save()
     loaded = Config.load()
     assert loaded.smart_routing is True
     assert loaded.run_in_background is False
+    assert loaded.learn_crops is False
 
 
 def test_new_settings_default_for_old_files(tmp_config):
@@ -76,3 +77,4 @@ def test_new_settings_default_for_old_files(tmp_config):
     loaded = Config.load()
     assert loaded.smart_routing is False
     assert loaded.run_in_background is True
+    assert loaded.learn_crops is True

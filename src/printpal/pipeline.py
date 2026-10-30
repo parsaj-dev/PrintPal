@@ -16,6 +16,7 @@ from typing import Callable
 
 from PIL import Image
 
+from printpal import learn
 from printpal.config import Config
 from printpal.detect import KIND_BLANK, LabelResult, find_labels, orientation_for, _rotate_upright
 from printpal.rasterize import (
@@ -45,6 +46,12 @@ class ProcessedLabel:
     region_index: int = 0               # which label on the page (N-up: 0,1,2,...)
     region_count: int = 1               # labels found on this page
     manual_rotation: int = 0            # extra clockwise degrees (0/90/180/270)
+    # Layout fingerprint (set when crop memory is on; None for N-up cells), and
+    # the name of the learned layout whose crop is in use, if any.
+    fingerprint: learn.Fingerprint | None = field(default=None, repr=False)
+    learned: str | None = None
+    # The automatic crop, kept once something replaces it so Adjust can go back.
+    _auto: tuple | None = field(default=None, repr=False)
     _print_cache: Image.Image | None = field(default=None, repr=False)
     _page_cache: Image.Image | None = field(default=None, repr=False)
     # Print images are rendered on worker threads (a background pre-render right
@@ -105,8 +112,29 @@ class ProcessedLabel:
             return rasterize_pdf(self.source_path, self.result.detect_dpi, page=self.page_index)
         return load_image(self.source_path)
 
+    @property
+    def auto_box(self) -> tuple[int, int, int, int]:
+        """The automatic crop (with margin), even after it has been replaced."""
+        return self._auto[0] if self._auto else self.result.box
+
+    def restore_auto(self) -> None:
+        """Go back to the automatic crop exactly as detection produced it."""
+        if self._auto is None:
+            return
+        r = self.result
+        with self._lock:
+            (r.box, r.orientation, r.image, r.method, r.confidence,
+             r.is_full_page, r.warnings) = self._auto
+            r.warnings = list(r.warnings)
+            self._auto = None
+            self.learned = None
+            self.manual_rotation = 0
+            self._print_cache = None
+            self._page_cache = None
+
     def apply_box(self, box: tuple[int, int, int, int], page: Image.Image,
-                  margin_px: int = 0) -> None:
+                  margin_px: int = 0, *, method: str = "manual",
+                  confidence: float = 1.0, warnings: list[str] | None = None) -> None:
         """Use ``box`` (page px at detect DPI) as the crop instead of the detected
         one: re-crop, re-derive the upright rotation from the barcodes inside it,
         and drop cached print renders."""
@@ -123,13 +151,16 @@ class ProcessedLabel:
         # sender laid it out); a smaller area turns upright with its barcodes.
         orientation = "UP" if full else orientation_for(box, r.barcode_boxes, default="UP")
         with self._lock:
+            if self._auto is None:
+                self._auto = (r.box, r.orientation, r.image, r.method, r.confidence,
+                              r.is_full_page, list(r.warnings))
             r.box = box
             r.orientation = orientation
             r.image = _rotate_upright(page.crop(box), orientation)
-            r.method = "manual"
-            r.confidence = 1.0
+            r.method = method
+            r.confidence = confidence
             r.is_full_page = full
-            r.warnings = []
+            r.warnings = list(warnings or [])
             self.manual_rotation = 0
             self._print_cache = None
             self._page_cache = None
@@ -174,12 +205,58 @@ class ProcessedLabel:
         return load_image(self.source_path)
 
 
+def can_learn(lab: ProcessedLabel) -> bool:
+    """Crop memory works per page: a single label (or document) on it, not one
+    cell of an N-up sheet."""
+    return lab.is_printable and lab.region_count == 1
+
+
+def apply_memory(lab: ProcessedLabel, page: Image.Image, memory: learn.CropMemory,
+                 config: Config, ink=None) -> bool:
+    """If ``lab``'s layout has a learned crop, use it. ``page`` is the source
+    page at the detection DPI. Returns True when a learned crop was applied."""
+    if not can_learn(lab):
+        return False
+    r = lab.result
+    dpi = r.detect_dpi
+    if ink is None:
+        ink = learn.ink_of(page)
+    if lab.fingerprint is None:
+        lab.fingerprint = learn.fingerprint(ink, dpi, r.barcode_boxes, r.barcode_types)
+    hit = memory.find(lab.fingerprint)
+    if hit is None:
+        return False
+    box, sample = hit.crop(dpi, page.size)
+    margin = 0
+    if not sample.whole and not sample.exact:
+        # Follow this label's own content, then add the usual quiet zone.
+        box = learn.Snapper(ink, dpi).snap(box)
+        margin = int(round(dpi * config.crop_margin_inches))
+    W, H = page.size
+    final = (max(0, box[0] - margin), max(0, box[1] - margin),
+             min(W, box[2] + margin), min(H, box[3] + margin))
+    warnings, confidence = [], 0.97
+    if learn.barcodes_inside(final, r.barcode_boxes) < sample.inside:
+        confidence = 0.6
+        warnings.append("The crop you taught PrintPal for this layout cut off a barcode "
+                        "on this label -- check the preview.")
+    try:
+        lab.apply_box(box, page, margin_px=margin, method="learned",
+                      confidence=confidence, warnings=warnings)
+    except ValueError:
+        return False
+    lab.learned = hit.name
+    return True
+
+
 def process_file(path: str, config: Config,
-                 progress: ProgressCallback | None = None) -> list[ProcessedLabel]:
+                 progress: ProgressCallback | None = None,
+                 memory: learn.CropMemory | None = None) -> list[ProcessedLabel]:
     """Detect every printable label in `path`.
 
     Returns one ProcessedLabel per page that carries content. If every page is
-    blank, the blank pages are returned so the caller can explain why.
+    blank, the blank pages are returned so the caller can explain why. With a
+    ``memory``, pages whose layout has a learned crop use it.
     """
     total = 1
     capped = 1
@@ -196,9 +273,12 @@ def process_file(path: str, config: Config,
         dpi = config.detect_dpi if is_document(path) else image_dpi(path, img)
         found = find_labels(img, dpi=dpi, margin_inches=config.crop_margin_inches,
                             split_nup=config.split_nup)
-        for r_idx, result in enumerate(found):
-            labels.append(ProcessedLabel(path, i, capped, result,
-                                         region_index=r_idx, region_count=len(found)))
+        page_labels = [ProcessedLabel(path, i, capped, result,
+                                      region_index=r_idx, region_count=len(found))
+                       for r_idx, result in enumerate(found)]
+        if memory is not None and len(memory) and len(page_labels) == 1:
+            apply_memory(page_labels[0], img, memory, config)
+        labels.extend(page_labels)
 
     if total > MAX_PAGES:
         for lab in labels:

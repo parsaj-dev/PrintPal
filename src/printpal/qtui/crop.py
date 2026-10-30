@@ -2,14 +2,19 @@
 
 Shows the whole page with every plausible area outlined. Hovering highlights the
 area under the pointer (the smallest one, so nested blocks stay reachable);
-clicking picks it; dragging draws a custom box. All boxes are in page pixels at
-the detection DPI, the same space as ``LabelResult.box``.
+clicking picks it; dragging draws a box. A drawn box only has to be rough: it is
+snapped to the content inside it (the rough box stays faintly visible), unless
+"Snap to content" is off. "Remember" teaches the result to PrintPal for this
+label layout (see learn.py). All boxes are in page pixels at the detection DPI,
+the same space as ``LabelResult.box``.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+)
 from PIL import Image
 
 from printpal.qtui import theme
@@ -19,17 +24,27 @@ Box = tuple[int, int, int, int]
 
 _DRAG_PX = 6   # pointer travel before a press becomes a drag
 
+# What the selection is (``CropDialog.result_box``):
+PICK = "pick"     # a detected area -> add the crop margin
+DRAW = "draw"     # a drawn box snapped to its content -> add the crop margin
+EXACT = "exact"   # a drawn box, snapping off -> use exactly
+WHOLE = "whole"   # the whole page
+AUTO = "auto"     # back to PrintPal's automatic crop
+
 
 class _CropCanvas(QWidget):
     def __init__(self, page: Image.Image, candidates: list[Box], current: Box,
-                 pal: theme.Palette, on_change):
+                 pal: theme.Palette, on_change, snap=None):
         super().__init__()
+        self._snap = snap               # rough box -> snapped box, or None
         self.pal = pal
         self.page_w, self.page_h = page.size
         self.pix = pil_to_qpixmap(page)
         self.candidates = list(candidates)
         self.selected: Box = tuple(current)
-        self.custom = False
+        self.mode: str | None = None    # None until the user changes something
+        self.snapping = snap is not None
+        self.raw: Box | None = None     # the rough box behind a snapped selection
         self.hover: Box | None = None
         self._press: QPoint | None = None
         self._drag: Box | None = None
@@ -89,11 +104,11 @@ class _CropCanvas(QWidget):
         if self._drag is not None:
             b = self._drag
             if b[2] - b[0] > 8 and b[3] - b[1] > 8:
-                self.select(b, custom=True)
+                self.draw(b)
         else:
             hit = self._hit(e.position().toPoint())
             if hit is not None:
-                self.select(hit, custom=False)
+                self.select(hit, PICK)
         self._press = None
         self._drag = None
         self.update()
@@ -102,11 +117,23 @@ class _CropCanvas(QWidget):
         self.hover = None
         self.update()
 
-    def select(self, box: Box, custom: bool) -> None:
+    def select(self, box: Box, mode: str, raw: Box | None = None) -> None:
         self.selected = tuple(box)
-        self.custom = custom
+        self.mode = mode
+        self.raw = raw
         self._on_change()
         self.update()
+
+    def draw(self, rough: Box) -> None:
+        if self.snapping and self._snap is not None:
+            self.select(self._snap(rough), DRAW, raw=rough)
+        else:
+            self.select(rough, EXACT, raw=rough)
+
+    def set_snapping(self, on: bool) -> None:
+        self.snapping = on
+        if self.mode in (DRAW, EXACT) and self.raw is not None:
+            self.draw(self.raw)   # re-apply the last drawn box either way
 
     # -- painting -------------------------------------------------------------
     def paintEvent(self, _e) -> None:
@@ -142,42 +169,80 @@ class _CropCanvas(QWidget):
             pnt.setPen(QPen(brand, 2, Qt.DashLine))
             pnt.drawRect(self._to_widget(self.hover))
         pnt.setBrush(Qt.NoBrush)
+        if self.raw is not None and self._drag is None and self.mode == DRAW:
+            # The rough box the user drew, so the snap is visible, not magic.
+            pnt.setPen(QPen(QColor(brand.red(), brand.green(), brand.blue(), 150), 1, Qt.DotLine))
+            pnt.drawRect(self._to_widget(self.raw))
         pnt.setPen(QPen(brand, 3))
         pnt.drawRect(sel)
 
 
 class CropDialog(QDialog):
-    """Returns (box, custom) via ``result_box()`` after ``exec()``. ``custom``
-    is True for a hand-drawn box (use it exactly, no extra margin)."""
+    """After ``exec()``, ``result_box()`` gives (box, mode): ``mode`` is one of
+    PICK / DRAW / EXACT / WHOLE / AUTO, or None if nothing was changed.
+    ``remember()`` says whether to teach (or, for AUTO, forget) the layout.
+
+    ``snap`` maps a rough box to a snapped one (learn.Snapper.snap); without it
+    drawn boxes are used exactly. ``remember`` names the layout to offer
+    learning for ("FedEx labels on Letter paper"), or None to not offer it.
+    ``learned`` is set when the current crop came from that layout's memory."""
 
     def __init__(self, parent, page: Image.Image, candidates: list[Box], current: Box,
-                 dark: bool):
+                 dark: bool, *, snap=None, auto_box: Box | None = None,
+                 remember: str | None = None, learned: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Adjust crop")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self._page_box = (0, 0, page.width, page.height)
+        self._layout = remember
+        self._learned = learned
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
         root.setSpacing(10)
         title = QLabel("Choose what to print")
         title.setObjectName("H2")
-        hint = QLabel("Hover to see the areas PrintPal found, click one to use it, "
-                      "or drag to draw your own box.")
+        hint = QLabel("Click an outlined area to use it, or drag a rough box around what "
+                      "you want" + (" — it snaps to the content inside." if snap else "."))
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         root.addWidget(title)
         root.addWidget(hint)
-        self.canvas = _CropCanvas(page, candidates, current, theme.palette(dark), self._changed)
+        if learned and remember:
+            note = QLabel(f"Using the crop you taught PrintPal for {remember}.")
+            note.setObjectName("Tiny")
+            note.setWordWrap(True)
+            root.addWidget(note)
+        self.canvas = _CropCanvas(page, candidates, current, theme.palette(dark),
+                                  self._changed, snap=snap)
         root.addWidget(self.canvas, 1)
+
+        opts = QHBoxLayout()
+        self.snap_box = QCheckBox("Snap to content")
+        self.snap_box.setToolTip("Tidy a drawn box to the text and barcodes inside it. "
+                                 "Turn off to use exactly what you draw.")
+        self.snap_box.setChecked(snap is not None)
+        self.snap_box.setVisible(snap is not None)
+        self.snap_box.toggled.connect(self.canvas.set_snapping)
+        self.remember_box = QCheckBox()
+        self.remember_box.setChecked(True)
+        self.remember_box.setVisible(remember is not None)
+        self.remember_box.setToolTip("PrintPal will crop the next label with this layout "
+                                     "the same way, following its own content.")
+        opts.addWidget(self.snap_box)
+        opts.addSpacing(16)
+        opts.addWidget(self.remember_box)
+        opts.addStretch(1)
+        root.addLayout(opts)
 
         btns = QHBoxLayout()
         whole = QPushButton("Whole page")
         whole.setObjectName("Ghost")
-        whole.clicked.connect(lambda: self.canvas.select(self._page_box, custom=True))
-        reset = QPushButton("Reset")
+        whole.clicked.connect(lambda: self.canvas.select(self._page_box, WHOLE))
+        auto = tuple(auto_box or current)
+        reset = QPushButton("Automatic")
         reset.setObjectName("Ghost")
-        reset.setToolTip("Back to PrintPal's choice")
-        reset.clicked.connect(lambda: self.canvas.select(tuple(current), custom=True))
+        reset.setToolTip("Back to PrintPal's own choice")
+        reset.clicked.connect(lambda: self.canvas.select(auto, AUTO))
         self.size_lbl = QLabel()
         self.size_lbl.setObjectName("Tiny")
         cancel = QPushButton("Cancel")
@@ -198,8 +263,8 @@ class CropDialog(QDialog):
         screen = QGuiApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else QRect(0, 0, 1280, 800)
         h = int(avail.height() * 0.85)
-        w = int(min(avail.width() * 0.9, (h - 140) * page.width / page.height + 60))
-        self.resize(max(520, w), h)
+        w = int(min(avail.width() * 0.9, (h - 170) * page.width / page.height + 60))
+        self.resize(max(560, w), h)
         self._dpi = None
         self._changed()
 
@@ -212,6 +277,21 @@ class CropDialog(QDialog):
         if self._dpi:
             self.size_lbl.setText(f"{(b[2] - b[0]) / self._dpi:.1f}″ × "
                                   f"{(b[3] - b[1]) / self._dpi:.1f}″")
+        if self._layout is None:
+            return
+        if self.canvas.mode == AUTO:
+            # Going back to automatic: the only thing to remember is to forget.
+            self.remember_box.setText(f"Forget what I taught for {self._layout}")
+            self.remember_box.setEnabled(self._learned)
+            self.remember_box.setVisible(self._learned)
+        else:
+            self.remember_box.setText(f"Remember for {self._layout}")
+            self.remember_box.setEnabled(True)
+            self.remember_box.setVisible(True)
 
-    def result_box(self) -> tuple[Box, bool]:
-        return self.canvas.selected, self.canvas.custom
+    def result_box(self) -> tuple[Box, str | None]:
+        return self.canvas.selected, self.canvas.mode
+
+    def remember(self) -> bool:
+        return (self._layout is not None and not self.remember_box.isHidden()
+                and self.remember_box.isEnabled() and self.remember_box.isChecked())
