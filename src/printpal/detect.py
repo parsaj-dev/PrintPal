@@ -74,6 +74,9 @@ class LabelResult:
     # Decoded barcodes as ((x0, y0, x1, y1), orientation), to re-derive the
     # rotation when the user picks a different area.
     barcode_boxes: list[tuple[tuple[int, int, int, int], str]] = field(default_factory=list)
+    # Symbology of each entry in ``barcode_boxes`` (e.g. "CODE128"); part of a
+    # page's layout fingerprint for learned crops.
+    barcode_types: list[str] = field(default_factory=list)
 
     @property
     def is_label(self) -> bool:
@@ -452,6 +455,7 @@ def find_label(img: Image.Image, dpi: int = 200,
         candidates=candidates,
         barcode_boxes=[(r, str(getattr(b, "orientation", "UP") or "UP"))
                        for r, b in zip(brects, barcodes)],
+        barcode_types=[str(getattr(b, "type", "") or "") for b in barcodes],
     )
 
 

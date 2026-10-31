@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QLabel, QPushButton, QSpinBox, QVBoxLayout,
+    QLabel, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
 )
 
 from printpal import autostart, routing
@@ -19,9 +19,10 @@ class SettingsDialog(QDialog):
     """``printers`` is the list the main window already loaded in the background,
     so opening Settings never waits on a (possibly slow) printer enumeration."""
 
-    def __init__(self, parent, config: Config, printers: list[str]):
+    def __init__(self, parent, config: Config, printers: list[str], memory=None):
         super().__init__(parent)
         self.config = config
+        self.memory = memory   # learn.CropMemory, for the "forget" button
         self.setWindowTitle("PrintPal Settings")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
 
@@ -87,6 +88,25 @@ class SettingsDialog(QDialog):
         self.splitnup.setChecked(config.split_nup)
         right.addWidget(self.splitnup)
 
+        # -- Learning ----------------------------------------------------------
+        right.addWidget(_section("LEARNING"))
+        self.learn = QCheckBox("Remember my crop fixes for each label layout")
+        self.learn.setToolTip("When you fix a crop with ✎ Adjust, the next label with "
+                              "the same layout is cropped that way automatically.")
+        self.learn.setChecked(config.learn_crops)
+        right.addWidget(self.learn)
+        row = QHBoxLayout()
+        self.learn_count = QLabel()
+        self.learn_count.setObjectName("Tiny")
+        self.forget = QPushButton("Forget all")
+        self.forget.setObjectName("Ghost")
+        self.forget.clicked.connect(self._forget_all)
+        row.addWidget(self.learn_count)
+        row.addStretch(1)
+        row.addWidget(self.forget)
+        right.addLayout(row)
+        self._update_learn_count()
+
         # -- Background --------------------------------------------------------
         right.addWidget(_section("SPEED"))
         self.background = QCheckBox("Keep running in the tray when closed")
@@ -138,6 +158,27 @@ class SettingsDialog(QDialog):
         root.addLayout(btns)
         self._update_route_hint()
 
+    def _update_learn_count(self) -> None:
+        n = len(self.memory) if self.memory is not None else 0
+        self.learn_count.setText("Nothing learned yet." if n == 0 else
+                                 f"{n} layout{'' if n == 1 else 's'} learned.")
+        self.forget.setEnabled(n > 0)
+
+    def _forget_all(self) -> None:
+        if self.memory is None:
+            return
+        n = len(self.memory)
+        ok = QMessageBox.question(
+            self, "Forget learned crops",
+            f"Forget the crops you taught PrintPal for {n} layout{'' if n == 1 else 's'}? "
+            "Those labels go back to automatic detection.")
+        if ok == QMessageBox.Yes:
+            try:
+                self.memory.clear()
+            except OSError:
+                pass
+            self._update_learn_count()
+
     def _targets(self) -> tuple[str, str]:
         return _value(self.thermal), _value(self.paper)
 
@@ -164,6 +205,7 @@ class SettingsDialog(QDialog):
         c.copies = self.copies.value()
         c.auto_print = self.autoprint.isChecked()
         c.split_nup = self.splitnup.isChecked()
+        c.learn_crops = self.learn.isChecked()
         c.run_in_background = self.background.isChecked()
         c.detect_dpi = self.detect.value()
         c.print_dpi = self.printdpi.value()
