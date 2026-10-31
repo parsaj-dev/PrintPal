@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 ### Added
 - **PrintPal learns from your crop fixes.** Fix a crop in ✎ Adjust and it is
