@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from PIL import Image
 
-from printpal.printing import prepare_for_page, _dib_bytes
+import pytest
+
+from printpal.printing import (
+    MODE_PERCENT, MODE_SIZE, PrintLayout, _dib_bytes, place_on_page, prepare_for_page,
+)
 
 
 class TestPrepareForPage:
@@ -42,6 +46,75 @@ class TestPrepareForPage:
         img = Image.new("RGB", (100, 100))
         resized, ox, oy = prepare_for_page(img, 0, 0)
         assert resized.size == (100, 100)
+
+
+def _label(w_in, h_in, dpi=300):
+    img = Image.new("RGB", (int(w_in * dpi), int(h_in * dpi)), "white")
+    img.info["dpi"] = (dpi, dpi)
+    return img
+
+
+class TestLayout:
+    # A 4x6 page at 300 dpi.
+    PAGE = (1200, 1800)
+
+    def test_percent_100_is_actual_size(self):
+        pl = place_on_page(_label(3, 4), *self.PAGE, layout=PrintLayout(mode=MODE_PERCENT))
+        assert (pl.w, pl.h) == (900, 1200)
+        assert (pl.x, pl.y) == (150, 300)            # centred by default
+        assert pl.image.size == (900, 1200)
+
+    def test_percent_uses_image_dpi(self):
+        img = _label(3, 4, dpi=200)                 # 600x800 px at 200 dpi = 3x4 in
+        pl = place_on_page(img, *self.PAGE, layout=PrintLayout(mode=MODE_PERCENT, percent=50))
+        assert (pl.w, pl.h) == (450, 600)           # 1.5 x 2 in at 300 dpi
+
+    def test_size_keep_aspect_fits_inside_box(self):
+        lay = PrintLayout(mode=MODE_SIZE, width_in=2, height_in=2)
+        pl = place_on_page(_label(4, 6), *self.PAGE, layout=lay)
+        assert (pl.w, pl.h) == (400, 600)
+
+    def test_size_stretch(self):
+        lay = PrintLayout(mode=MODE_SIZE, width_in=3, height_in=3, keep_aspect=False)
+        pl = place_on_page(_label(4, 6), *self.PAGE, layout=lay)
+        assert (pl.w, pl.h) == (900, 900)
+
+    def test_anchor_and_nudge(self):
+        lay = PrintLayout(mode=MODE_PERCENT, anchor="bottom-right", offset_x_in=-0.5)
+        pl = place_on_page(_label(2, 2), *self.PAGE, layout=lay)
+        assert (pl.x, pl.y) == (1200 - 600 - 150, 1800 - 600)
+        lay = PrintLayout(mode=MODE_PERCENT, anchor="top-left", offset_y_in=0.25)
+        pl = place_on_page(_label(2, 2), *self.PAGE, layout=lay)
+        assert (pl.x, pl.y) == (0, 75)
+
+    def test_fit_anchor_top(self):
+        pl = place_on_page(_label(4, 4), *self.PAGE, layout=PrintLayout(anchor="top"))
+        assert (pl.x, pl.y, pl.w, pl.h) == (0, 0, 1200, 1200)
+
+    def test_oversize_is_clipped_to_page(self):
+        pl = place_on_page(_label(4, 6), *self.PAGE,
+                           layout=PrintLayout(mode=MODE_PERCENT, percent=200))
+        assert (pl.x, pl.y, pl.w, pl.h) == (0, 0, 1200, 1800)
+        assert pl.image.size == (1200, 1800)
+
+    def test_entirely_off_page_raises(self):
+        lay = PrintLayout(mode=MODE_PERCENT, offset_x_in=9)
+        with pytest.raises(ValueError):
+            place_on_page(_label(2, 2), *self.PAGE, layout=lay)
+
+    def test_huge_page_keeps_aspect_under_cap(self):
+        # Letter at 1200 dpi exceeds the bitmap cap: the image shrinks evenly
+        # and GDI stretches it back to the full device rectangle.
+        pl = place_on_page(_label(8.5, 11, dpi=100), 10200, 13200)
+        assert (pl.w, pl.h) == (10200, 13200)
+        iw, ih = pl.image.size
+        assert max(iw, ih) <= 6000
+        assert abs(iw / ih - 10200 / 13200) < 0.01
+
+    def test_describe(self):
+        assert PrintLayout().describe() == "Fit"
+        assert PrintLayout(mode=MODE_PERCENT, percent=85).describe() == "85%"
+        assert PrintLayout(mode=MODE_SIZE, width_in=4, height_in=6).describe() == "4 × 6 in"
 
 
 class TestDib:

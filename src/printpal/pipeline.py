@@ -180,13 +180,27 @@ class ProcessedLabel:
         with self._lock:
             if full_page:
                 if self._page_cache is None:
-                    self._page_cache = _apply_manual(self._render_page(config),
-                                                     self.manual_rotation)
+                    self._page_cache = self._tag(_apply_manual(self._render_page(config),
+                                                               self.manual_rotation), config)
                 return self._page_cache
             if self._print_cache is None:
-                self._print_cache = _apply_manual(self._render_crop(config),
-                                                  self.manual_rotation)
+                self._print_cache = self._tag(_apply_manual(self._render_crop(config),
+                                                            self.manual_rotation), config)
             return self._print_cache
+
+    def print_dpi(self, config: Config) -> int:
+        """Resolution of ``render_print_image``: documents render at the print
+        DPI, image files keep their own resolution."""
+        return config.print_dpi if is_document(self.source_path) else self.result.detect_dpi
+
+    def _tag(self, img: Image.Image, config: Config) -> Image.Image:
+        # Record the resolution so the printer can print at actual size, and
+        # a saved PNG opens at the right physical size.
+        dpi = self.print_dpi(config)
+        if img is self.result.image:
+            img = img.copy()   # never tag (or later mutate) the preview itself
+        img.info["dpi"] = (dpi, dpi)
+        return img
 
     def _render_crop(self, config: Config) -> Image.Image:
         if is_document(self.source_path):

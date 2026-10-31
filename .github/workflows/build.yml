@@ -87,6 +87,21 @@ jobs:
             PrintPal-Portable.zip
           if-no-files-found: error
 
+      - name: Write release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $notes = if (Test-Path "RELEASE_NOTES.md") { Get-Content -Raw "RELEASE_NOTES.md" } else { "" }
+          $download = @"
+
+          ## Download
+
+          **Recommended:** Download ``PrintPal-Setup.exe``. New install: Start Menu and desktop shortcuts plus an Add/Remove Programs entry. Already installed: choose **Update only** for a one-click update that keeps all your settings.
+
+          **Portable:** Download ``PrintPal-Portable.zip``, extract anywhere, and run ``PrintPal.exe`` directly.
+          "@
+          Set-Content -Path "release_body.md" -Value ($notes + $download) -Encoding utf8
+        shell: pwsh
+
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -94,9 +109,4 @@ jobs:
           files: |
             installer_output/PrintPal-Setup.exe
             PrintPal-Portable.zip
-          body: |
-            ## Download
-
-            **Recommended:** Download `PrintPal-Setup.exe` to install PrintPal with Start Menu shortcuts, desktop shortcut, and Add/Remove Programs entry.
-
-            **Portable:** Download `PrintPal-Portable.zip`, extract anywhere, and run `PrintPal.exe` directly.
+          body_path: release_body.md

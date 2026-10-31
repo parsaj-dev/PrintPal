@@ -607,9 +607,40 @@ def find_labels(img: Image.Image, dpi: int = 200, margin_inches: float = 0.08,
             r.barcode_boxes = [(shift(b), o) for b, o in r.barcode_boxes]
             results.append(r)
 
-    if sum(1 for r in results if r.is_label) >= 2:
+    if _is_real_nup(results, dpi, margin_inches):
         return results
     return single()
+
+
+# A single shipping label is at most about 4x6 (with some slack for 4x6.75 and
+# sloppy trims). Two or more real labels can never fit inside that together.
+_ONE_LABEL_MAX_SHORT_IN = 4.6
+_ONE_LABEL_MAX_LONG_IN = 6.9
+# Every cell of a genuine N-up sheet is a whole label; a strip narrower than
+# this is a section of one label (e.g. a tracking-barcode band).
+_NUP_CELL_MIN_SHORT_IN = 2.5
+
+
+def _is_real_nup(results: list[LabelResult], dpi: int, margin_inches: float) -> bool:
+    """Is a proposed N-up split real, or one label cut into sections?
+
+    Labels with several barcodes (a FedEx return label: a reference code in the
+    address block, the tracking code below a rule) have whitespace between their
+    barcode groups that looks just like an N-up gutter. Two checks catch that:
+    every cell must be label-sized, and the cells together must be bigger than
+    any single label could be."""
+    labels = [r for r in results if r.is_label]
+    if len(labels) < 2:
+        return False
+    pad = 2 * int(round(dpi * max(0.0, margin_inches)))
+    for r in labels:
+        w, h = r.box[2] - r.box[0] - pad, r.box[3] - r.box[1] - pad
+        if min(w, h) / dpi < _NUP_CELL_MIN_SHORT_IN:
+            return False
+    ux0 = min(r.box[0] for r in labels); uy0 = min(r.box[1] for r in labels)
+    ux1 = max(r.box[2] for r in labels); uy1 = max(r.box[3] for r in labels)
+    short, long_ = sorted(((ux1 - ux0 - pad) / dpi, (uy1 - uy0 - pad) / dpi))
+    return not (short <= _ONE_LABEL_MAX_SHORT_IN and long_ <= _ONE_LABEL_MAX_LONG_IN)
 
 
 class _Rect:

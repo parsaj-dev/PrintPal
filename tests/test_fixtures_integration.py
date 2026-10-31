@@ -94,3 +94,15 @@ class TestNup:
         cfg.split_nup = False
         labels = process_file(str(fixtures / "twoup.pdf"), cfg)
         assert len(labels) == 1                     # whole page kept as one
+
+    def test_one_label_with_two_barcodes_is_not_split(self, fixtures):
+        # A single return label whose reference and tracking barcodes are
+        # separated by whitespace must stay whole, not be cut into sections.
+        labels = process_file(str(fixtures / "two_barcode_letter.pdf"), Config())
+        assert len(labels) == 1
+        lab = labels[0]
+        assert lab.region_count == 1
+        assert len(lab.result.barcode_data) == 2
+        img = lab.preview_image
+        w_in, h_in = (v / lab.result.detect_dpi for v in img.size)
+        assert 3.5 <= w_in <= 4.6 and 5.5 <= h_in <= 6.5   # the whole 4x6, upright

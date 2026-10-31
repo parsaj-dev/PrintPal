@@ -55,6 +55,7 @@ Designed for thermal label printers like the DYMO LabelWriter 450, Rollo, and Ze
 - **History + reprint** -- every print is logged (thumbnail, date, carrier, tracking number decoded from the barcode) in a local database. One-click reprint from history, or **Ctrl+R** to reprint the last label.
 - **N-up splitting** -- a page holding 2 or 4 labels (Amazon/Etsy style) is detected and split into individual 4x6 prints automatically.
 - **Smart routing (opt-in)** -- pick a label printer and a paper printer in Settings and switch routing on: shipping labels print cropped on the thermal printer, packing slips / documents print as the full page on the paper printer, per page. Works for single files, multi-page files and the batch queue. Off by default; never automatic.
+- **Print size & position** -- fill the page (default), print at a percentage of the label's actual size, or fit it inside a size in inches; then anchor it anywhere on the page (9 positions) and nudge it by hundredths of an inch. A live preview shows the label on your printer's actual page. **⤢** in the action bar (Ctrl+L) or Settings.
 - **Auto-print** -- optionally print a single high-confidence label the moment it loads.
 - **Built for slow PCs** -- detection, rendering, printing and history all run in the background, so the window never freezes. PrintPal stays in the tray when closed (and can start there when you sign in), so a label printed to PrintPal appears in well under a second instead of waiting for the app to start.
 
@@ -66,6 +67,8 @@ Go to the [Releases page](https://github.com/parsaj-dev/PrintPal/releases/latest
 - **`PrintPal-Portable.zip`** -- extract anywhere and run. No install needed.
 
 No Python or other dependencies required. Everything is bundled.
+
+**Updating?** Just run the new `PrintPal-Setup.exe`. It spots the existing install and offers **Update only**: one click replaces the program and leaves your settings, history, learned crops, shortcuts, sign-in option and the PrintPal printer exactly as they are (a running PrintPal goes back in the tray afterwards). Pick *Change install options* instead to go through the choices again.
 
 ## How the detection works
 
@@ -86,7 +89,7 @@ Detection runs on a low-DPI render for speed; the label you print is then re-ren
 
 If no barcode is found, PrintPal keeps the whole page (or the largest content block) and flags it as low confidence rather than guessing at a tight crop. A document-media page with no barcode is classified as a **packing slip / document** rather than a shipping label.
 
-**N-up pages** (2 or 4 labels in a grid, Amazon/Etsy style) are detected by clustering the barcodes and cutting the page at the whitespace gutters *between* the labels, so each one is cropped and printed as an individual 4x6. This can be turned off (`split_nup`) to keep the whole page as one.
+**N-up pages** (2 or 4 labels in a grid, Amazon/Etsy style) are detected by clustering the barcodes and cutting the page at the whitespace gutters *between* the labels, so each one is cropped and printed as an individual 4x6. This can be turned off (`split_nup`) to keep the whole page as one. A split is only accepted when every piece is label-sized and the pieces together are bigger than any one label could be -- so a single label whose barcodes sit in separate sections (a FedEx return label's reference code and tracking code) is never cut apart. If a page is ever split wrongly, **Keep as one label** next to "Label 1 of 2" re-reads it whole.
 
 ## Learned crops
 
@@ -144,6 +147,14 @@ Settings live in `%APPDATA%\PrintPal\config.toml`, created with defaults on firs
 | `smart_routing` | `false` | Route labels to `thermal_printer` and documents to `paper_printer` (only takes effect when the two differ) |
 | `run_in_background` | `true` | Closing the window keeps PrintPal in the tray, so prints to the PrintPal printer show up instantly |
 | `learn_crops` | `true` | Remember crop fixes made in Adjust per label layout and reuse them (see [Learned crops](#learned-crops)) |
+| `scale_mode` | `"fit"` | `fit` fills the page; `percent` prints at `scale_percent` of the label's actual size; `size` fits it inside `scale_width_in` x `scale_height_in` |
+| `scale_percent` | `100` | Percentage of actual size (10-400) for `percent` mode |
+| `scale_width_in` / `scale_height_in` | `4` / `6` | Box size in inches (as it lands on the paper) for `size` mode |
+| `scale_keep_aspect` | `true` | Fit inside the box keeping proportions; `false` stretches to exactly that size |
+| `position` | `"center"` | Where the label sits: `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right` |
+| `offset_x_in` / `offset_y_in` | `0` / `0` | Nudge from that position in inches (+ = right / down) |
+
+Size & position apply to labels; a document routed to the paper printer always prints as the full page.
 
 Smart routing is only *applied* when you switch it on (Settings, or the toggle in the Label and Queue views) -- setting `thermal_printer` / `paper_printer` never reroutes prints on its own. "Start PrintPal in the tray when I sign in" lives in Settings (installed app) and in the installer.
 
@@ -158,6 +169,7 @@ Smart routing is only *applied* when you switch it on (Settings, or the toggle i
 | Ctrl+Left / Ctrl+Right | Previous / next label in a multi-label file |
 | Esc | Cancel what's running, or close the label |
 | Ctrl+W | Close the label |
+| Ctrl+L | Print size & position |
 
 Older config files that used `dpi` are still read (it maps to `detect_dpi`).
 
@@ -198,7 +210,7 @@ src/printpal/
     pipeline.py      turns a file into ready-to-print labels (multi-page, N-up, lazy render)
     learn.py         learned crops: layout fingerprint, snap-to-content, crop memory
     rasterize.py     PDF/XPS/image to PIL Image via PyMuPDF (page + region rendering)
-    printing.py      Windows GDI print spooler, Lanczos-to-device scaling
+    printing.py      Windows GDI print spooler, print size & position, Lanczos-to-device scaling
     ingest.py        job spool: one hand-off point for the virtual printer,
                      a second launch, a future Downloads-watcher, batch queue
     batch.py         per-label print queue (status, retry, history logging)
@@ -209,7 +221,8 @@ src/printpal/
     config.py        tolerant TOML config in AppData
     log.py           rotating file logger
     qtui/            the PySide6 desktop UI
-        app.py, window.py, widgets.py, workers.py, settings.py, theme.py, crop.py
+        app.py, window.py, widgets.py, workers.py, settings.py, theme.py, crop.py,
+        layout.py (print size & position dialog)
 winprinter/          optional Windows virtual printer (XPS -> ingest -> engine)
     jobio.py, printpal_catcher.py, printpal_watcher.py, printpal_port.py
     install_printer.ps1, uninstall_printer.ps1, README.md

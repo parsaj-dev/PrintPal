@@ -69,6 +69,7 @@ class PrintTask:
     printer: str
     copies: int
     after: Callable[[Image.Image], None] | None = None
+    layout: object = None     # printing.PrintLayout; None = fill the page
 
 
 class PrintSignals(QObject):
@@ -94,7 +95,7 @@ class PrintWorker(QRunnable):
                 errors.append(f"Couldn't render the label: {e}")
                 continue
             try:
-                self.print_fn(image, t.printer, t.copies)
+                self.print_fn(image, t.printer, t.copies, layout=t.layout)
             except Exception as e:  # noqa: BLE001
                 errors.append(str(e) or e.__class__.__name__)
                 continue

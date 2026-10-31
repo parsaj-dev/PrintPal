@@ -27,6 +27,16 @@ DEFAULT_DARK_MODE = False
 DEFAULT_SMART_ROUTING = False
 DEFAULT_RUN_IN_BACKGROUND = True
 DEFAULT_LEARN_CROPS = True
+# Print size & position (see printing.PrintLayout).
+DEFAULT_SCALE_MODE = "fit"          # fit | percent | size
+DEFAULT_SCALE_PERCENT = 100.0
+DEFAULT_SCALE_WIDTH_IN = 4.0
+DEFAULT_SCALE_HEIGHT_IN = 6.0
+DEFAULT_SCALE_KEEP_ASPECT = True
+DEFAULT_POSITION = "center"
+_SCALE_MODES = ("fit", "percent", "size")
+_POSITIONS = ("top-left", "top", "top-right", "left", "center", "right",
+              "bottom-left", "bottom", "bottom-right")
 
 _CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 CONFIG_PATH = _CONFIG_DIR / "config.toml"
@@ -87,6 +97,17 @@ class Config:
     # Remember crop fixes made in Adjust crop, per label layout, and use them
     # automatically next time (see learn.py).
     learn_crops: bool = DEFAULT_LEARN_CROPS
+    # Print size & position: fill the media ("fit"), a percentage of the
+    # label's actual size, or fit inside width x height inches; then placed at
+    # `position` on the page and nudged by the offsets (inches, + = right/down).
+    scale_mode: str = DEFAULT_SCALE_MODE
+    scale_percent: float = DEFAULT_SCALE_PERCENT
+    scale_width_in: float = DEFAULT_SCALE_WIDTH_IN
+    scale_height_in: float = DEFAULT_SCALE_HEIGHT_IN
+    scale_keep_aspect: bool = DEFAULT_SCALE_KEEP_ASPECT
+    position: str = DEFAULT_POSITION
+    offset_x_in: float = 0.0
+    offset_y_in: float = 0.0
 
     # Backwards-compatible alias: older configs and callers used `dpi` for the
     # detection raster resolution.
@@ -105,6 +126,15 @@ class Config:
         self.crop_margin_inches = max(0.0, min(0.5, self.crop_margin_inches))
         self.copies = max(1, min(99, self.copies))
         self.auto_print_min_confidence = max(0.5, min(1.0, self.auto_print_min_confidence))
+        if self.scale_mode not in _SCALE_MODES:
+            self.scale_mode = DEFAULT_SCALE_MODE
+        self.scale_percent = max(10.0, min(400.0, self.scale_percent))
+        self.scale_width_in = max(0.5, min(20.0, self.scale_width_in))
+        self.scale_height_in = max(0.5, min(20.0, self.scale_height_in))
+        if self.position not in _POSITIONS:
+            self.position = DEFAULT_POSITION
+        self.offset_x_in = max(-10.0, min(10.0, self.offset_x_in))
+        self.offset_y_in = max(-10.0, min(10.0, self.offset_y_in))
         return self
 
     def save(self) -> None:
@@ -127,6 +157,14 @@ class Config:
             f"smart_routing = {str(self.smart_routing).lower()}",
             f"run_in_background = {str(self.run_in_background).lower()}",
             f"learn_crops = {str(self.learn_crops).lower()}",
+            f"scale_mode = {_q(self.scale_mode)}",
+            f"scale_percent = {float(self.scale_percent)}",
+            f"scale_width_in = {float(self.scale_width_in)}",
+            f"scale_height_in = {float(self.scale_height_in)}",
+            f"scale_keep_aspect = {str(self.scale_keep_aspect).lower()}",
+            f"position = {_q(self.position)}",
+            f"offset_x_in = {float(self.offset_x_in)}",
+            f"offset_y_in = {float(self.offset_y_in)}",
         ]
         # Write-then-rename so a crash (or a second save racing this one) never
         # leaves a truncated config behind.
@@ -172,4 +210,16 @@ class Config:
                                        DEFAULT_RUN_IN_BACKGROUND),
             learn_crops=_as_bool(data.get("learn_crops", DEFAULT_LEARN_CROPS),
                                  DEFAULT_LEARN_CROPS),
+            scale_mode=str(data.get("scale_mode", DEFAULT_SCALE_MODE)),
+            scale_percent=_as_float(data.get("scale_percent", DEFAULT_SCALE_PERCENT),
+                                    DEFAULT_SCALE_PERCENT),
+            scale_width_in=_as_float(data.get("scale_width_in", DEFAULT_SCALE_WIDTH_IN),
+                                     DEFAULT_SCALE_WIDTH_IN),
+            scale_height_in=_as_float(data.get("scale_height_in", DEFAULT_SCALE_HEIGHT_IN),
+                                      DEFAULT_SCALE_HEIGHT_IN),
+            scale_keep_aspect=_as_bool(data.get("scale_keep_aspect", DEFAULT_SCALE_KEEP_ASPECT),
+                                       DEFAULT_SCALE_KEEP_ASPECT),
+            position=str(data.get("position", DEFAULT_POSITION)),
+            offset_x_in=_as_float(data.get("offset_x_in", 0.0), 0.0),
+            offset_y_in=_as_float(data.get("offset_y_in", 0.0), 0.0),
         ).clamped()

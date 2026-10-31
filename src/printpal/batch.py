@@ -31,8 +31,8 @@ PRINTING = "printing"
 DONE = "done"
 FAILED = "failed"
 
-# print_fn(image, printer_name, copies) -> None
-PrintFn = Callable[[Image.Image, str, int], None]
+# print_fn(image, printer_name, copies[, layout=...]) -> None
+PrintFn = Callable[..., None]
 ChangeFn = Callable[["QueueItem"], None]
 
 
@@ -60,8 +60,12 @@ class PrintQueue:
 
     def __init__(self, config: Config, print_fn: PrintFn,
                  history: History | None = None, on_change: ChangeFn | None = None,
-                 memory=None):
+                 memory=None, layout_fn: Callable[[], object] | None = None):
         self.config = config
+        # Returns the print size & position for labels (printing.PrintLayout),
+        # read at print time so a change in the UI applies to the next item.
+        # Full-page documents always fill the page.
+        self.layout_fn = layout_fn
         # Learned crops (learn.CropMemory), used while ``config.learn_crops`` is on.
         self.memory = memory
         self.print_fn = print_fn
@@ -166,7 +170,11 @@ class PrintQueue:
             decision = routing.printer_for(item.kind, self.config, routing_enabled)
             image = item.label.render_print_image(self.config, full_page=decision.full_page)
             item.printer = decision.printer
-            self.print_fn(image, decision.printer, self.config.copies)
+            if self.layout_fn is not None and not decision.full_page:
+                self.print_fn(image, decision.printer, self.config.copies,
+                              layout=self.layout_fn())
+            else:
+                self.print_fn(image, decision.printer, self.config.copies)
             self._record_history(item, image)
             item.status = DONE
         except Exception as e:  # noqa: BLE001 - a bad label must not stop the batch
@@ -186,7 +194,7 @@ class PrintQueue:
                 printer=item.printer or self.config.printer,
                 page_index=lab.page_index if lab else 0,
                 region_index=lab.region_index if lab else 0,
-                dpi=self.config.print_dpi)
+                dpi=lab.print_dpi(self.config) if lab else self.config.print_dpi)
             self.history.record(entry, image)
         except Exception:  # noqa: BLE001 - history is best-effort, never fatal
             pass

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from printpal import autostart, routing
 from printpal.config import Config
+from printpal.printing import PrintLayout
 
 # Shown in the routing combos for "no dedicated printer": falls back to the
 # main printer. Stored in the config as "".
@@ -57,6 +58,13 @@ class SettingsDialog(QDialog):
         self.copies.setRange(1, 99)
         self.copies.setValue(config.copies)
         f.addRow("Default copies", self.copies)
+        self.layout_btn = QPushButton()
+        self.layout_btn.setObjectName("Ghost")
+        self.layout_btn.setToolTip("Fit the page, a percentage, or a size in inches -- "
+                                   "and where on the page the label goes")
+        self.layout_btn.clicked.connect(self._open_layout)
+        self._update_layout_btn()
+        f.addRow("Size && position", self.layout_btn)
         left.addLayout(f)
 
         # -- Smart routing -----------------------------------------------------
@@ -157,6 +165,25 @@ class SettingsDialog(QDialog):
         btns.addWidget(save)
         root.addLayout(btns)
         self._update_route_hint()
+
+    def _update_layout_btn(self) -> None:
+        lay = PrintLayout.from_config(self.config)
+        text = "Fit page" if lay.mode == "fit" else lay.describe()
+        if lay.anchor != "center":
+            text += f" · {lay.anchor.replace('-', ' ')}"
+        self.layout_btn.setText(text + "  …")
+
+    def _open_layout(self) -> None:
+        from printpal.qtui.layout import LayoutDialog
+        printer = routing.printer_for("label", self._probe(), self.route_on.isChecked()).printer
+        if LayoutDialog(self, self.config, printer, dark=self.config.dark_mode).exec():
+            self._update_layout_btn()
+
+    def _probe(self) -> Config:
+        probe = Config(printer=self.printer.currentText().strip())
+        probe.thermal_printer, probe.paper_printer = self._targets()
+        probe.smart_routing = self.route_on.isChecked()
+        return probe
 
     def _update_learn_count(self) -> None:
         n = len(self.memory) if self.memory is not None else 0

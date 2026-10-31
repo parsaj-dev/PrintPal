@@ -12,6 +12,9 @@ Produces:
     twoup.pdf         one page holding 2 labels (Etsy/Amazon N-up style)
     fourup.pdf        one page holding 4 labels
     multi.pdf         a 3-page PDF: label, packing slip, label
+    two_barcode_letter.pdf  ONE 4x6 label with two barcodes (a reference code
+                      up top, the tracking code below a divider), turned
+                      sideways on a Letter sheet -- must not be split as N-up
 
 Requires `python-barcode` (a dev-only dependency): pip install -e ".[dev]".
 """
@@ -99,6 +102,22 @@ def make_label_image(w_in: float = 4, h_in: float = 6,
     return img
 
 
+def make_two_barcode_label(tracking: str = "794658123456",
+                           reference: str = "RMA10000275346") -> Image.Image:
+    """A 4x6 return label with a reference barcode in the address section and
+    the tracking barcode in its own section, set off by whitespace and a rule
+    (FedEx return-label style). The gap between them looks like an N-up gutter."""
+    img = make_label_image(carrier="FEDEX", tracking=tracking)
+    W, H = img.size
+    m = int(0.12 * DPI)
+    ref = _code128(reference)
+    rw = int(2.2 * DPI)
+    rh = int(ref.height * (rw / ref.width))
+    ref = ref.resize((rw, rh), Image.LANCZOS)
+    img.paste(ref, (W - m - rw, int(1.05 * DPI)))
+    return img
+
+
 def _in(x: float) -> float:
     return x * 72.0
 
@@ -170,6 +189,13 @@ def generate(out_dir: str) -> list[str]:
     _place(page, make_label_image(carrier="USPS", tracking="9400111899223818110794"),
            pymupdf.Rect(0, 0, _in(4), _in(6)))
     save(doc, "multi.pdf")
+
+    # 6) One label, two barcodes, sideways on Letter (rotated 90 degrees)
+    doc = pymupdf.open()
+    page = doc.new_page(width=_in(8.5), height=_in(11))
+    label = make_two_barcode_label().rotate(90, expand=True)
+    _place(page, label, pymupdf.Rect(_in(0.4), _in(0.4), _in(6.4), _in(4.4)))
+    save(doc, "two_barcode_letter.pdf")
 
     return written
 

@@ -242,6 +242,8 @@ def stylesheet(dark: bool, glyphs: dict[str, str] | None = None) -> str:
     QPushButton#Primary:disabled {{ background: {p.border_strong}; color: {p.surface}; }}
 
     QPushButton#Tool {{ padding: 8px 12px; border-radius: 10px; }}
+    QPushButton#Tool:checked {{ background: {p.brand_tint}; border-color: {BRAND};
+        color: {BRAND_PRESS if not dark else BRAND}; }}
     QPushButton#Ghost {{ background: transparent; border: 1px solid {p.border_strong}; }}
     QPushButton#Ghost:hover {{ background: {p.surface_alt}; border-color: {BRAND}; }}
     QPushButton#Danger {{ background: transparent; border: 1px solid {p.border_strong}; }}

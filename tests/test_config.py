@@ -78,3 +78,20 @@ def test_new_settings_default_for_old_files(tmp_config):
     assert loaded.smart_routing is False
     assert loaded.run_in_background is True
     assert loaded.learn_crops is True
+
+
+def test_layout_settings_roundtrip(tmp_config):
+    cfg = Config(scale_mode="size", scale_width_in=3.5, scale_height_in=5.0,
+                 scale_keep_aspect=False, position="top-left", offset_x_in=0.1,
+                 offset_y_in=-0.2, scale_percent=90)
+    cfg.save()
+    back = Config.load()
+    assert (back.scale_mode, back.scale_width_in, back.scale_height_in) == ("size", 3.5, 5.0)
+    assert back.scale_keep_aspect is False and back.position == "top-left"
+    assert (back.offset_x_in, back.offset_y_in, back.scale_percent) == (0.1, -0.2, 90)
+
+
+def test_layout_settings_bad_values_fall_back(tmp_config):
+    cfg = Config(scale_mode="huge", position="nowhere", scale_percent=5000).clamped()
+    assert cfg.scale_mode == "fit" and cfg.position == "center"
+    assert cfg.scale_percent == 400

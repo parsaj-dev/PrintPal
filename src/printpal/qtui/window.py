@@ -7,6 +7,7 @@ freezes for a second after every print.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import os
 import sys
@@ -29,8 +30,9 @@ from printpal.batch import DONE, FAILED, PRINTING, PrintQueue, QUEUED, QueueItem
 from printpal.carrier import parse_tracking
 from printpal.config import Config
 from printpal.history import History, HistoryEntry
-from printpal.printing import list_printers, print_label
+from printpal.printing import PrintLayout, list_printers, print_label
 from printpal.qtui import theme
+from printpal.qtui.layout import LayoutDialog
 from printpal.qtui.settings import SettingsDialog
 from printpal.qtui.widgets import PreviewCanvas, ThumbTile, make_chip, pil_to_qpixmap
 from printpal.qtui.workers import (
@@ -98,7 +100,7 @@ class MainWindow(QWidget):
         self.history = History()
         self.crop_memory = learn.CropMemory()
         self.queue = PrintQueue(config, print_label, history=self.history,
-                                memory=self.crop_memory)
+                                memory=self.crop_memory, layout_fn=self._print_layout)
 
         self.labels: list[ProcessedLabel] = []
         self.selected = 0
@@ -144,6 +146,7 @@ class MainWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+P"), self, self.print_current)
         QShortcut(QKeySequence("Ctrl+R"), self, self.reprint_last)
         QShortcut(QKeySequence("Ctrl+W"), self, self.close_label)
+        QShortcut(QKeySequence("Ctrl+L"), self, self.open_layout)
         QShortcut(QKeySequence("Escape"), self, self._escape)
         QShortcut(QKeySequence("Ctrl+Left"), self, lambda: self._select_delta(-1))
         QShortcut(QKeySequence("Ctrl+Right"), self, lambda: self._select_delta(1))
@@ -329,7 +332,11 @@ class MainWindow(QWidget):
         self.btn_adjust = QPushButton("✎  Adjust"); self.btn_adjust.setObjectName("Tool")
         self.btn_adjust.setToolTip("Wrong area? Pick another one, or draw your own")
         self.btn_adjust.clicked.connect(self.adjust_crop)
-        for b in (self.btn_close, self.btn_adjust, self.btn_ccw, self.btn_cw, self.btn_save):
+        self.btn_layout = QPushButton(); self.btn_layout.setObjectName("Tool")
+        self.btn_layout.clicked.connect(self.open_layout)
+        self._update_layout_button()
+        for b in (self.btn_close, self.btn_adjust, self.btn_ccw, self.btn_cw, self.btn_save,
+                  self.btn_layout):
             ab.addWidget(b)
         ab.addStretch(1)
         self.copies = QSpinBox(); self.copies.setRange(1, 99); self.copies.setValue(self.config.copies)
@@ -596,10 +603,12 @@ class MainWindow(QWidget):
         else:
             self.status.setText("Clipboard has no label file. Copy a label, then paste.")
 
-    def load_path(self, path: str, job: ingest.IngestJob | None = None) -> None:
+    def load_path(self, path: str, job: ingest.IngestJob | None = None,
+                  split_nup: bool | None = None) -> None:
         """Detect ``path`` in the background. A newer load replaces one that is
         still running (its result is dropped), so nothing the user opens is ever
-        silently ignored."""
+        silently ignored. ``split_nup`` overrides the N-up setting for this load
+        only."""
         err = _validate(path)
         if err:
             # Leaves any detection already running untouched.
@@ -619,7 +628,10 @@ class MainWindow(QWidget):
         self._go(NAV_LABEL)
         self.status.setText(f"Reading {os.path.basename(path)}…")
         self._set_working(True)
-        worker = DetectWorker(path, self.config, self._gen, prerender=self._prerender_first,
+        config = self.config
+        if split_nup is not None and split_nup != config.split_nup:
+            config = dataclasses.replace(config, split_nup=split_nup)
+        worker = DetectWorker(path, config, self._gen, prerender=self._prerender_first,
                               memory=self.crop_memory if self.config.learn_crops else None)
         # Cross-thread signals -> main-thread slots (Qt queues them automatically).
         worker.signals.done.connect(self._on_detect_done)
@@ -827,6 +839,12 @@ class MainWindow(QWidget):
             self.info.addWidget(self._muted(f"{ship.carrier} · {ship.tracking}"))
         if lab.region_count > 1:
             self.info.addWidget(self._muted(f"Label {lab.region_index + 1} of {lab.region_count}"))
+            merge = QPushButton("Keep as one label")
+            merge.setObjectName("Ghost")
+            merge.setToolTip("Not really several labels? Re-read this file without "
+                             "splitting the page")
+            merge.clicked.connect(self.keep_as_one)
+            self.info.addWidget(merge)
         elif lab.page_count > 1:
             self.info.addWidget(self._muted(f"Page {lab.page_index + 1} of {lab.page_count}"))
         if lab.learned:
@@ -845,6 +863,13 @@ class MainWindow(QWidget):
             warn.setWordWrap(True)
             warn.setObjectName("Warn")
             self.info.addWidget(warn)
+
+    def keep_as_one(self) -> None:
+        """Undo an N-up split for the file on screen (this load only)."""
+        if not self.labels:
+            return
+        self.load_path(self.labels[0].source_path, job=self._current_job, split_nup=False)
+        self._current_job = None
 
     def _muted(self, text: str) -> QLabel:
         l = QLabel(text); l.setObjectName("Muted")
@@ -1004,7 +1029,8 @@ class MainWindow(QWidget):
             tasks.append(PrintTask(
                 render=partial(lab.render_print_image, self.config, d.full_page),
                 printer=d.printer, copies=copies,
-                after=partial(self._record_history, lab, d.printer, copies)))
+                after=partial(self._record_history, lab, d.printer, copies),
+                layout=None if d.full_page else self._print_layout()))
         dest = ", ".join(dict.fromkeys(targets))
         self.status.setText(("Auto-printing" if auto else "Printing") + f" to {dest}…")
         self._run_print(tasks, dest, copies, interactive=not auto)
@@ -1055,7 +1081,7 @@ class MainWindow(QWidget):
             carrier=ship.carrier, tracking=ship.tracking, kind=lab.kind,
             copies=copies, printer=printer,
             page_index=lab.page_index, region_index=lab.region_index,
-            dpi=self.config.print_dpi)
+            dpi=lab.print_dpi(self.config))
         self.history.record(entry, image)
 
     def save_current(self) -> None:
@@ -1067,7 +1093,9 @@ class MainWindow(QWidget):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self.labels[self.selected].render_print_image(self.config).save(path)
+            lab = self.labels[self.selected]
+            dpi = lab.print_dpi(self.config)
+            lab.render_print_image(self.config).save(path, dpi=(dpi, dpi))
             self.status.setText(f"Saved {os.path.basename(path)}.")
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "PrintPal", f"Couldn't save.\n\n{e}")
@@ -1261,10 +1289,14 @@ class MainWindow(QWidget):
             image = self.history.load_print_image(entry)
             if image is None:
                 raise RuntimeError("The stored image for this print is missing.")
+            if entry.dpi:
+                image.info["dpi"] = (entry.dpi, entry.dpi)
             return image
         label = entry.tracking or entry.source_name
         self.status.setText(f"Reprinting {label} → {printer}…")
-        self._run_print([PrintTask(render=render, printer=printer, copies=entry.copies or 1)],
+        layout = self._print_layout() if entry.kind != "document" else None
+        self._run_print([PrintTask(render=render, printer=printer, copies=entry.copies or 1,
+                                   layout=layout)],
                         printer, entry.copies or 1)
 
     def reprint_last(self) -> None:
@@ -1279,6 +1311,29 @@ class MainWindow(QWidget):
             self.history.clear()
             self._refresh_history()
 
+    # ------------------------------------------------------------- size & position
+    def _print_layout(self) -> PrintLayout:
+        return PrintLayout.from_config(self.config)
+
+    def _update_layout_button(self) -> None:
+        lay = self._print_layout()
+        self.btn_layout.setText(f"⤢  {lay.describe()}")
+        self.btn_layout.setToolTip(
+            "Print size & position (Ctrl+L) -- currently: "
+            + ("fill the page" if lay.mode == "fit" else lay.describe())
+            + ("" if lay.anchor == "center" and not (lay.offset_x_in or lay.offset_y_in)
+               else f", {lay.anchor.replace('-', ' ')}"))
+
+    def open_layout(self) -> None:
+        lab = self.labels[self.selected] if self.labels else None
+        printer = self._decision(lab).printer if lab is not None else self.config.printer
+        image = lab.preview_image if lab is not None else None
+        dpi = lab.result.detect_dpi if lab is not None else 200
+        dlg = LayoutDialog(self, self.config, printer, image, dpi, dark=self.dark)
+        if dlg.exec():
+            self._update_layout_button()
+            self.status.setText(f"Print size: {self._print_layout().describe()}.")
+
     # ------------------------------------------------------------- settings
     def open_settings(self) -> None:
         before = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup,
@@ -1288,6 +1343,7 @@ class MainWindow(QWidget):
             return
         self._fill_printers(self._printers)
         self.copies.setValue(self.config.copies)
+        self._update_layout_button()
         after = (self.config.detect_dpi, self.config.crop_margin_inches, self.config.split_nup,
                  self.config.learn_crops, len(self.crop_memory))
         if self.labels and before != after:
